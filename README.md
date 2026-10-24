@@ -17,6 +17,8 @@ python -m servidor                  # abre http://127.0.0.1:8000
 
 En Windows puede ser `py -m servidor`. Para proyectarlo desde otro equipo de la red: `python -m servidor --host 0.0.0.0`.
 
+Si el puerto 8000 está ocupado o reservado por Windows (`WinError 10013` o `10048`), el servidor prueba solo el 8001, 8002… y muestra en la consola la dirección que quedó activa. También puedes elegirlo: `python -m servidor --puerto 5050`.
+
 En la página: elige el **modelo**, el **tipo de solicitudes** y pulsa **Ejecutar**, o **Comparar los 3 modelos** para correrlos seguidos con la misma carga.
 
 ## Qué demuestra

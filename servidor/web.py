@@ -206,10 +206,25 @@ def crear_manejador(lab: Laboratorio):
     return Manejador
 
 
+def _abrir(host: str, puerto: int, manejador, intentos: int = 20):
+    """Abre el servidor en `puerto`; si está ocupado o reservado, prueba los siguientes.
+
+    En Windows es común que Hyper-V, WSL o Docker reserven rangos de puertos
+    (WinError 10013), y que otro programa ya use el 8000 (WinError 10048).
+    """
+    for p in range(puerto, puerto + intentos):
+        try:
+            return ThreadingHTTPServer((host, p), manejador), p
+        except OSError as e:
+            print(f"  Puerto {p} no disponible ({e.strerror or e}); probando {p + 1}…")
+    raise SystemExit(f"No se encontró un puerto libre entre {puerto} y {puerto + intentos - 1}. "
+                     "Prueba con:  python -m servidor --puerto 5050")
+
+
 def iniciar(host: str = "127.0.0.1", puerto: int = 8000) -> None:
     print("Calibrando la CPU de este equipo…", flush=True)
     lab = Laboratorio()
-    servidor = ThreadingHTTPServer((host, puerto), crear_manejador(lab))
+    servidor, puerto = _abrir(host, puerto, crear_manejador(lab))
     servidor.daemon_threads = True
     info = lab.info()
     print(f"  {info['nucleos']} núcleos · Python {info['python']} · "
