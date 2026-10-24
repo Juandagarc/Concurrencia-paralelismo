@@ -83,7 +83,8 @@ El servidor se muestra como una cafetería. Cada elemento corresponde a una piez
 
 - **Pedido de CPU**: el mesero camina a la cafetera del núcleo donde el sistema operativo lo está ejecutando. Si el sistema lo cambia de núcleo, el mesero cambia de cafetera. En Windows y macOS no se puede leer el núcleo por hilo, así que la cafetera se asigna de forma aproximada.
 - **La llave (GIL)** se infiere del orden de los eventos reales: queda sobre el último mesero que avanzó un pedido de CPU y vuelve a la pizarra cuando nadie calcula, por ejemplo mientras esperan en la cocina. En concurrente hay una sola llave y se ve saltar entre meseros; en paralelo cada proceso tiene la suya.
-- Caminar, el pedido que viaja de la mesa al mesero y la taza que vuelve a la mesa son animaciones visuales. Los tiempos que se miden son los de los eventos.
+- **El recorrido de cada pedido**: el mesero camina por los pasillos hasta la mesa, toma el pedido (lo lleva en la bandeja), va a la cafetera o a la cocina y, cuando el servidor termina, vuelve a la mesa con la taza.
+- **Caminar es animación; los tiempos son reales.** El trabajo empieza en el servidor en cuanto llega el evento, sin esperar a que el mesero llegue. Si el mesero se atrasa frente a los eventos reales, apura el paso según cuánto va atrasado, hasta 10 veces su velocidad normal. Así la última taza llega más o menos un segundo después del fin real. Las etiquetas, las métricas y la línea de tiempo muestran siempre los tiempos reales.
 - **Línea de tiempo**: gris = en cola, color = mesero que la atiende, marcas = cada evento de progreso.
 - La propia visualización consume CPU. Para las mediciones del documento usa `medir.py` con el navegador cerrado.
 

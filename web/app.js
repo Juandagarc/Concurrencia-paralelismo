@@ -28,6 +28,8 @@ const estado = {
 
 const escena = new Escena($('#escena'));
 const gantt = new Gantt($('#gantt'));
+// Acceso desde la consola del navegador (F12) para explorar el estado
+window.laboratorio = { escena, gantt, estado };
 
 // ------------------------------------------------------------- controles
 function segmentos(id, clave, alCambiar) {
@@ -47,8 +49,9 @@ function marcar(id, valor) {
 function refrescarTextos() {
   $('#concepto').innerHTML = CONCEPTO[estado.modo];
   $('#pista-escenario').textContent = PISTA[estado.escenario];
-  $('#trabajadores').disabled = estado.modo === 'secuencial';
-  $('#v-trab').textContent = estado.modo === 'secuencial' ? '1' : estado.trabajadores;
+  // El control nunca se bloquea por el modo: en secuencial muestra 1 y, si se
+  // mueve, la página pasa a concurrente (ver el manejador de 'input').
+  $('#v-trab').textContent = estado.modo === 'secuencial' ? '1 (secuencial)' : estado.trabajadores;
   $('#v-dur').textContent = `${estado.duracion.toFixed(1)} s`;
 }
 
@@ -63,7 +66,14 @@ function previsualizar() {
 
 segmentos('#modo', 'modo', previsualizar);
 segmentos('#escenario', 'escenario', previsualizar);
-$('#trabajadores').addEventListener('input', (e) => { estado.trabajadores = +e.target.value; previsualizar(); });
+$('#trabajadores').addEventListener('input', (e) => {
+  estado.trabajadores = +e.target.value;
+  if (estado.modo === 'secuencial') {      // secuencial siempre es 1: mover el control pasa a concurrente
+    estado.modo = 'concurrente';
+    marcar('#modo', 'concurrente');
+  }
+  previsualizar();
+});
 $('#duracion').addEventListener('input', (e) => { estado.duracion = +e.target.value; refrescarTextos(); pintarComparacion(); });
 $('#ejecutar').addEventListener('click', () => ejecutar(estado.modo).catch(avisar));
 $('#comparar').addEventListener('click', compararTodos);
@@ -322,7 +332,7 @@ async function iniciar() {
   const nucleos = info.nucleos ?? 4;
   estado.trabajadores = Math.min(Math.max(2, nucleos), 8);
   const slider = $('#trabajadores');
-  slider.max = Math.max(8, Math.min(16, nucleos * 2));
+  slider.max = 16;
   slider.value = estado.trabajadores;
   $('#equipo').insertAdjacentHTML('afterbegin', `
     <span class="chip"><b>${nucleos}</b> núcleos</span>
