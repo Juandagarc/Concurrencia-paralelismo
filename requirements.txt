@@ -1,0 +1,3 @@
+# El servidor y la simulación solo usan la biblioteca estándar de Python.
+psutil>=5.9        # opcional: uso real de cada núcleo en la visualización
+matplotlib>=3.7    # para graficas.py

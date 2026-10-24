@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.DS_Store
+.idea/
+.vscode/
+
+# Resultados generados en cada equipo (se suben a mano los definitivos)
+resultados/*
+!resultados/.gitkeep

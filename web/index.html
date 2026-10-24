@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Laboratorio de concurrencia</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="importmap">
+    { "imports": {
+        "three": "./vendor/three.module.js",
+        "three/addons/": "./vendor/addons/"
+    } }
+  </script>
+</head>
+<body>
+  <header class="barra">
+    <div class="marca">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <h1>Laboratorio de concurrencia y paralelismo</h1>
+        <p>Grupo 1 · Sistemas Distribuidos · un servidor real atiende 10 solicitudes</p>
+      </div>
+    </div>
+    <div class="equipo" id="equipo">
+      <span class="chip" id="conexion"><i class="punto"></i>conectando…</span>
+    </div>
+  </header>
+
+  <aside class="panel izq">
+    <section>
+      <h2>Modelo de ejecución</h2>
+      <div class="segmentos" id="modo" role="radiogroup">
+        <button data-v="secuencial" class="activo">Secuencial</button>
+        <button data-v="concurrente">Concurrente</button>
+        <button data-v="paralelo">Paralelo</button>
+      </div>
+      <p class="concepto" id="concepto"></p>
+    </section>
+
+    <section>
+      <h2>Tipo de solicitudes</h2>
+      <div class="segmentos" id="escenario" role="radiogroup">
+        <button data-v="io" class="activo">E/S</button>
+        <button data-v="cpu">CPU</button>
+        <button data-v="mixto">Mixto</button>
+      </div>
+      <p class="pista" id="pista-escenario"></p>
+    </section>
+
+    <section class="ajustes">
+      <label>Trabajadores <output id="v-trab">4</output>
+        <input type="range" id="trabajadores" min="1" max="16" value="4">
+      </label>
+      <label>Duración por solicitud <output id="v-dur">1.0 s</output>
+        <input type="range" id="duracion" min="0.2" max="3" step="0.1" value="1">
+      </label>
+      <p class="pista">Hilos del pool (concurrente) o procesos (paralelo). El secuencial siempre usa 1.</p>
+    </section>
+
+    <section class="acciones">
+      <button class="primario" id="ejecutar">Ejecutar</button>
+      <button class="secundario" id="comparar">Comparar los 3 modelos</button>
+    </section>
+
+    <section class="leyenda">
+      <h2>Leyenda</h2>
+      <ul>
+        <li><i style="background:var(--espera)"></i>En cola, esperando</li>
+        <li><i style="background:var(--io)"></i>Esperando E/S (el anillo gira)</li>
+        <li><i style="background:var(--cpu)"></i>Calculando en la CPU (gira)</li>
+        <li><i style="background:var(--listo)"></i>Respuesta enviada</li>
+        <li><i class="linea-l"></i>Núcleo donde corre ahora</li>
+      </ul>
+    </section>
+  </aside>
+
+  <main class="escena" id="escena">
+    <div class="estado-escena" id="estado-escena">Elige un modelo y pulsa <b>Ejecutar</b></div>
+    <button class="vista" id="vista" title="Restablecer cámara">Centrar vista</button>
+  </main>
+
+  <aside class="panel der">
+    <section>
+      <h2>Ejecución actual</h2>
+      <div class="metricas">
+        <div><span>Reloj</span><b id="m-reloj">0.00 s</b></div>
+        <div><span>Atendidas</span><b id="m-listas">0 / 10</b></div>
+        <div><span>En cola</span><b id="m-cola">—</b></div>
+        <div><span>Trabajando</span><b id="m-activas">—</b></div>
+        <div><span>Resp. promedio</span><b id="m-resp">—</b></div>
+        <div><span>Arranque</span><b id="m-arranque">—</b></div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Comparación <small id="comp-titulo"></small></h2>
+      <div class="barras" id="barras"></div>
+      <p class="pista" id="conclusion"></p>
+    </section>
+
+    <section>
+      <h2>Historial
+        <span class="exportar">
+          <button id="exp-json" disabled>JSON</button>
+          <button id="exp-csv" disabled>CSV</button>
+        </span>
+      </h2>
+      <table class="tabla">
+        <thead><tr><th>Modelo</th><th>Carga</th><th>Trab.</th><th>Total</th><th>×</th></tr></thead>
+        <tbody id="historial"><tr class="vacio"><td colspan="5">Sin ejecuciones todavía</td></tr></tbody>
+      </table>
+      <p class="pista">× = aceleración frente al secuencial con la misma carga y duración.</p>
+    </section>
+  </aside>
+
+  <footer class="inferior">
+    <section class="gantt">
+      <h2>Línea de tiempo real <small>gris = en cola · color = trabajador · marcas = eventos de progreso</small></h2>
+      <canvas id="gantt"></canvas>
+    </section>
+    <section class="registro">
+      <h2>Eventos en vivo <small id="n-eventos">0</small></h2>
+      <ol id="log"></ol>
+    </section>
+  </footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

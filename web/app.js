@@ -1,0 +1,341 @@
+// Interfaz del laboratorio: controles, eventos en vivo (SSE), métricas y comparación.
+import { Escena } from './escena.js';
+import { Gantt } from './gantt.js';
+
+const $ = (s) => document.querySelector(s);
+const NOMBRE_MODO = { secuencial: 'Secuencial', concurrente: 'Concurrente', paralelo: 'Paralelo' };
+const NOMBRE_ESC = { io: 'E/S', cpu: 'CPU', mixto: 'Mixto' };
+const ETQ_LOG = { ejecucion_inicio: 'ejecución', ejecucion_fin: 'total' };
+const COLOR_MODO = { secuencial: 'var(--sec)', concurrente: 'var(--con)', paralelo: 'var(--par)' };
+
+const CONCEPTO = {
+  secuencial: '<b>Una solicitud después de otra.</b> El hilo principal atiende la #1; cuando termina, la #2, y así. Mientras una solicitud espera, la CPU queda ociosa y las demás hacen fila.',
+  concurrente: '<b>Varias solicitudes progresan intercalándose.</b> Un pool de hilos dentro del mismo proceso comparte la memoria. Si un hilo espera E/S, otro avanza. En Python el GIL deja ejecutar código Python a un solo hilo a la vez: con carga de CPU se turnan y no hay aceleración.',
+  paralelo: '<b>Varias solicitudes se ejecutan al mismo tiempo.</b> Un pool de procesos, cada uno con memoria e intérprete propios, corre en núcleos distintos. Acelera el cálculo hasta el número de núcleos, a cambio del costo de crear procesos y comunicarlos (IPC).',
+};
+const PISTA = {
+  io: 'Cada solicitud espera, como al consultar una base de datos: el hilo se bloquea y libera la CPU.',
+  cpu: 'Cada solicitud calcula sin parar: ocupa un núcleo entero y retiene el GIL.',
+  mixto: 'Las solicitudes impares esperan E/S y las pares calculan.',
+};
+
+const estado = {
+  modo: 'secuencial', escenario: 'io', trabajadores: 4, duracion: 1,
+  info: null, ocupado: false, t0: 0, corriendo: false,
+  carriles: new Map(), listas: 0, activas: new Set(), solicitudes: [],
+  eventos: [], ultimaEjecucion: null, historial: [], esperando: null, nEventos: 0,
+};
+
+const escena = new Escena($('#escena'));
+const gantt = new Gantt($('#gantt'));
+
+// ------------------------------------------------------------- controles
+function segmentos(id, clave, alCambiar) {
+  const g = $(id);
+  g.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b || estado.ocupado) return;
+    g.querySelectorAll('button').forEach((x) => x.classList.toggle('activo', x === b));
+    estado[clave] = b.dataset.v;
+    alCambiar?.();
+  });
+}
+function marcar(id, valor) {
+  $(id).querySelectorAll('button').forEach((x) => x.classList.toggle('activo', x.dataset.v === valor));
+}
+
+function refrescarTextos() {
+  $('#concepto').innerHTML = CONCEPTO[estado.modo];
+  $('#pista-escenario').textContent = PISTA[estado.escenario];
+  $('#trabajadores').disabled = estado.modo === 'secuencial';
+  $('#v-trab').textContent = estado.modo === 'secuencial' ? '1' : estado.trabajadores;
+  $('#v-dur').textContent = `${estado.duracion.toFixed(1)} s`;
+}
+
+function previsualizar() {
+  refrescarTextos();
+  if (!estado.ocupado) {
+    escena.reconfigurar({ modo: estado.modo, trabajadores: estado.trabajadores,
+      nucleos: estado.info?.nucleos ?? 4 });
+  }
+  pintarComparacion();
+}
+
+segmentos('#modo', 'modo', previsualizar);
+segmentos('#escenario', 'escenario', previsualizar);
+$('#trabajadores').addEventListener('input', (e) => { estado.trabajadores = +e.target.value; previsualizar(); });
+$('#duracion').addEventListener('input', (e) => { estado.duracion = +e.target.value; refrescarTextos(); pintarComparacion(); });
+$('#ejecutar').addEventListener('click', () => ejecutar(estado.modo).catch(avisar));
+$('#comparar').addEventListener('click', compararTodos);
+$('#vista').addEventListener('click', () => escena.vistaInicial());
+$('#exp-json').addEventListener('click', () => exportar('json'));
+$('#exp-csv').addEventListener('click', () => exportar('csv'));
+
+function bloquear(si) {
+  estado.ocupado = si;
+  ['#ejecutar', '#comparar', '#trabajadores', '#duracion'].forEach((s) => { $(s).disabled = si; });
+  document.querySelectorAll('.segmentos button').forEach((b) => { b.disabled = si; });
+  if (!si) refrescarTextos();
+}
+
+async function ejecutar(modo) {
+  const r = await fetch('/api/ejecutar', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ modo, escenario: estado.escenario,
+      trabajadores: estado.trabajadores, duracion: estado.duracion }),
+  });
+  const datos = await r.json();
+  if (!r.ok) throw new Error(datos.error || 'No se pudo ejecutar');
+  bloquear(true);
+  return new Promise((ok, fallo) => { estado.esperando = { ok, fallo }; });
+}
+
+async function compararTodos() {
+  try {
+    for (const modo of ['secuencial', 'concurrente', 'paralelo']) {
+      estado.modo = modo;
+      marcar('#modo', modo);
+      refrescarTextos();
+      await ejecutar(modo);
+      await new Promise((r) => setTimeout(r, 900));
+    }
+  } catch (e) { avisar(e); }
+}
+
+function avisar(e) {
+  bloquear(false);
+  $('#estado-escena').textContent = `⚠ ${e.message}`;
+  registrar({ tipo: 'error', t: 0, mensaje: e.message });
+}
+
+// -------------------------------------------------------------- eventos
+function conectar() {
+  const fuente = new EventSource('/api/eventos');
+  const chip = $('#conexion');
+  fuente.onopen = () => { chip.className = 'chip ok'; chip.lastChild.textContent = 'en vivo'; };
+  fuente.onerror = () => { chip.className = 'chip mal'; chip.lastChild.textContent = 'reconectando…'; };
+  fuente.onmessage = (m) => manejar(JSON.parse(m.data));
+}
+
+function manejar(ev) {
+  switch (ev.tipo) {
+    case 'ejecucion_inicio': {
+      Object.assign(estado, { t0: performance.now(), corriendo: true, listas: 0,
+        solicitudes: ev.solicitudes, eventos: [], carriles: new Map(), activas: new Set() });
+      estado.modo = ev.modo; estado.escenario = ev.escenario;
+      marcar('#modo', ev.modo); marcar('#escenario', ev.escenario);
+      if (!estado.ocupado) bloquear(true);   // otra pestaña lanzó la ejecución
+      escena.reconfigurar({ modo: ev.modo, trabajadores: ev.trabajadores, nucleos: ev.nucleos, pid: ev.pid_servidor });
+      escena.crearSolicitudes(ev.solicitudes);
+      gantt.reiniciar(ev.solicitudes);
+      $('#log').innerHTML = '';
+      estado.nEventos = 0;
+      const quien = ev.modo === 'secuencial' ? '1 hilo'
+        : `${ev.trabajadores} ${ev.modo === 'paralelo' ? 'procesos' : 'hilos'}`;
+      $('#estado-escena').innerHTML = `Ejecutando · <b>${NOMBRE_MODO[ev.modo]}</b> · ${NOMBRE_ESC[ev.escenario]} · ${quien}`;
+      ['#m-resp', '#m-arranque'].forEach((s) => { $(s).textContent = '—'; });
+      $('#exp-json').disabled = $('#exp-csv').disabled = true;
+      break;
+    }
+    case 'inicio': {
+      if (!estado.carriles.has(ev.trabajador)) estado.carriles.set(ev.trabajador, estado.carriles.size);
+      const carril = estado.carriles.get(ev.trabajador);
+      estado.activas.add(ev.id);
+      escena.inicio(ev, carril);
+      gantt.inicio(ev, carril);
+      break;
+    }
+    case 'progreso': escena.progreso(ev); gantt.progreso(ev); break;
+    case 'fin':
+      estado.activas.delete(ev.id);
+      estado.listas++;
+      escena.fin(ev); gantt.fin(ev);
+      break;
+    case 'cpu': escena.cpu(ev.uso); break;
+    case 'ejecucion_fin':
+      estado.corriendo = false;
+      gantt.ahora = ev.t;
+      $('#m-reloj').textContent = `${ev.t.toFixed(2)} s`;
+      $('#estado-escena').innerHTML = `Terminó en <b>${ev.t.toFixed(2)} s</b> · ${NOMBRE_MODO[estado.modo]} · ${NOMBRE_ESC[estado.escenario]}`;
+      break;
+    case 'resumen': alResumen(ev); break;
+    case 'error':
+      estado.esperando?.fallo(new Error(ev.mensaje));
+      estado.esperando = null;
+      break;
+  }
+  if (ev.tipo !== 'cpu' && ev.tipo !== 'resumen') {
+    estado.eventos.push(ev);
+    registrar(ev);
+  }
+}
+
+function alResumen(r) {
+  estado.ultimaEjecucion = { resumen: r, eventos: estado.eventos.slice() };
+  estado.historial.push(r);
+  $('#m-resp').textContent = `${r.respuesta_promedio.toFixed(2)} s`;
+  $('#m-arranque').textContent = `${(r.arranque * 1000).toFixed(0)} ms`;
+  $('#exp-json').disabled = $('#exp-csv').disabled = false;
+  pintarHistorial(true);
+  pintarComparacion(r);
+  bloquear(false);
+  estado.esperando?.ok(r);
+  estado.esperando = null;
+}
+
+// ------------------------------------------------------------- registro
+function registrar(ev) {
+  const log = $('#log');
+  const li = document.createElement('li');
+  let detalle = '';
+  let clase = ev.tipo;
+  if (['inicio', 'progreso', 'fin'].includes(ev.tipo)) {
+    const nucleo = ev.nucleo != null ? ` · núcleo ${ev.nucleo}` : '';
+    const pct = ev.tipo === 'progreso' ? ` ${Math.round(ev.progreso * 100)}%` : '';
+    detalle = `#${ev.id}${pct} · ${ev.trabajador} (pid ${ev.pid}, tid ${ev.tid})${nucleo}`;
+  } else if (ev.tipo === 'llegada') {
+    detalle = `#${ev.id} ${ev.usuario} · ${NOMBRE_ESC[ev.trabajo]}`;
+    clase = 'sistema';
+  } else if (ev.tipo === 'ejecucion_inicio') {
+    detalle = `${NOMBRE_MODO[ev.modo]} · ${ev.trabajadores} trabajador(es) · servidor pid ${ev.pid_servidor}`;
+    clase = 'sistema';
+  } else if (ev.tipo === 'ejecucion_fin') {
+    detalle = `tiempo total ${ev.t.toFixed(3)} s`;
+    clase = 'sistema';
+  } else if (ev.tipo === 'error') {
+    detalle = ev.mensaje;
+  }
+  li.innerHTML = `<span class="t">${(ev.t ?? 0).toFixed(3)}</span><span class="tipo ${clase}">${ETQ_LOG[ev.tipo] ?? ev.tipo}</span>`;
+  li.append(detalle);
+  log.prepend(li);
+  while (log.children.length > 300) log.lastChild.remove();
+  $('#n-eventos').textContent = ++estado.nEventos;
+}
+
+// ----------------------------------------------------- comparación e historial
+const clave = (r) => `${r.escenario}|${(+r.duracion).toFixed(1)}`;
+
+function ultimoPor(escenario, duracion, modo) {
+  for (let i = estado.historial.length - 1; i >= 0; i--) {
+    const r = estado.historial[i];
+    if (r.modo === modo && clave(r) === `${escenario}|${duracion.toFixed(1)}`) return r;
+  }
+  return null;
+}
+
+function aceleracion(r) {
+  const base = ultimoPorAntesDe(r);
+  return base ? base.total / r.total : null;
+}
+function ultimoPorAntesDe(r) {
+  const idx = estado.historial.indexOf(r);
+  for (let i = estado.historial.length - 1; i >= 0; i--) {
+    const b = estado.historial[i];
+    if (b.modo === 'secuencial' && clave(b) === clave(r) && (i <= idx || idx < 0)) return b;
+  }
+  for (const b of estado.historial) if (b.modo === 'secuencial' && clave(b) === clave(r)) return b;
+  return null;
+}
+
+function pintarComparacion(ref) {
+  const esc = ref?.escenario ?? estado.escenario;
+  const dur = ref ? +ref.duracion : estado.duracion;
+  $('#comp-titulo').textContent = `${NOMBRE_ESC[esc]} · ${dur.toFixed(1)} s por solicitud`;
+  const filas = ['secuencial', 'concurrente', 'paralelo'].map((m) => [m, ultimoPor(esc, dur, m)]);
+  const max = Math.max(0.001, ...filas.map(([, r]) => r?.total ?? 0));
+  $('#barras').innerHTML = filas.map(([m, r]) => {
+    const ancho = r ? Math.max(4, (r.total / max) * 100) : 0;
+    const texto = r ? `${r.total.toFixed(2)} s` : 'sin medir';
+    return `<div class="barra-m"><span class="etq-modo"><i style="background:${COLOR_MODO[m]}"></i>${NOMBRE_MODO[m]}</span>
+      <div class="pista-b"><div class="relleno" style="width:${ancho}%;background:${COLOR_MODO[m]}"></div>
+      <span class="valor ${ancho < 30 ? 'fuera' : ''}" style="${ancho < 30 ? `left:calc(${ancho}% + 8px)` : ''}">${texto}</span></div></div>`;
+  }).join('');
+  $('#conclusion').textContent = conclusion(esc, Object.fromEntries(filas));
+}
+
+function conclusion(esc, r) {
+  const { secuencial: s, concurrente: c, paralelo: p } = r;
+  if (!s || (!c && !p)) return 'Ejecuta los tres modelos con la misma carga para compararlos.';
+  const x = (a) => (a ? `${(s.total / a.total).toFixed(1)}×` : '—');
+  if (esc === 'io') return `Con E/S los hilos aceleran ${x(c)} y los procesos ${x(p)}: mientras una solicitud espera, otra avanza. Los hilos lo logran sin el costo de crear procesos.`;
+  if (esc === 'cpu') return `Con cálculo los hilos aceleran ${x(c)} (el GIL los turna) y los procesos ${x(p)}: solo el paralelismo real usa varios núcleos a la vez.`;
+  return `Carga mixta: hilos ${x(c)}, procesos ${x(p)}. Los hilos aprovechan las esperas; los procesos, además, reparten el cálculo entre núcleos.`;
+}
+
+function pintarHistorial(nuevo = false) {
+  const tb = $('#historial');
+  if (!estado.historial.length) return;
+  tb.innerHTML = estado.historial.slice().reverse().map((r, i) => {
+    const a = aceleracion(r);
+    return `<tr class="${nuevo && i === 0 ? 'nuevo' : ''}">
+      <td><span class="etq-modo"><i style="background:${COLOR_MODO[r.modo]}"></i>${NOMBRE_MODO[r.modo]}</span></td>
+      <td>${NOMBRE_ESC[r.escenario]} ${(+r.duracion).toFixed(1)}s</td><td>${r.trabajadores}</td>
+      <td>${r.total.toFixed(2)}</td><td>${a ? a.toFixed(1) : '—'}</td></tr>`;
+  }).join('');
+}
+
+// --------------------------------------------------------------- exportar
+function exportar(formato) {
+  const u = estado.ultimaEjecucion;
+  if (!u) return;
+  const base = `${u.resumen.modo}_${u.resumen.escenario}_${u.resumen.fecha.replace(/[:T]/g, '-')}`;
+  let contenido, tipo;
+  if (formato === 'json') {
+    contenido = JSON.stringify(u, null, 1);
+    tipo = 'application/json';
+  } else {
+    const cols = ['tipo', 'id', 't', 'trabajador', 'pid', 'tid', 'nucleo', 'progreso'];
+    const filas = u.eventos.filter((e) => ['llegada', 'inicio', 'progreso', 'fin'].includes(e.tipo))
+      .map((e) => cols.map((c) => e[c] ?? '').join(','));
+    contenido = [cols.join(','), ...filas].join('\n');
+    tipo = 'text/csv';
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([contenido], { type: tipo }));
+  a.download = `eventos_${base}.${formato}`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// ------------------------------------------------------------ bucle de UI
+function tic() {
+  if (estado.corriendo) {
+    const t = (performance.now() - estado.t0) / 1000;
+    gantt.tiempo(t);
+    $('#m-reloj').textContent = `${t.toFixed(2)} s`;
+  }
+  const n = estado.solicitudes.length || 10;
+  $('#m-listas').textContent = `${estado.listas} / ${n}`;
+  if (estado.solicitudes.length) {
+    $('#m-activas').textContent = estado.activas.size;
+    $('#m-cola').textContent = n - estado.listas - estado.activas.size;
+  }
+  gantt.dibujar();
+  requestAnimationFrame(tic);
+}
+
+// ----------------------------------------------------------------- arranque
+async function iniciar() {
+  const info = await (await fetch('/api/info')).json();
+  estado.info = info;
+  const nucleos = info.nucleos ?? 4;
+  estado.trabajadores = Math.min(Math.max(2, nucleos), 8);
+  const slider = $('#trabajadores');
+  slider.max = Math.max(8, Math.min(16, nucleos * 2));
+  slider.value = estado.trabajadores;
+  $('#equipo').insertAdjacentHTML('afterbegin', `
+    <span class="chip"><b>${nucleos}</b> núcleos</span>
+    <span class="chip">Python <b>${info.python}</b></span>
+    <span class="chip" title="Global Interpreter Lock">GIL <b>${info.gil ? 'activo' : 'desactivado'}</b></span>
+    <span class="chip" title="Linux permite leer en qué núcleo corre cada hilo">núcleo por hilo <b>${info.nucleo_detectable ? 'sí' : 'no'}</b></span>
+    <span class="chip">uso de CPU <b>${info.uso_cpu_disponible ? 'real' : 'no disponible'}</b></span>`);
+  estado.historial = await (await fetch('/api/historial')).json();
+  pintarHistorial();
+  previsualizar();
+  conectar();
+  if (info.ocupado) bloquear(true);
+}
+
+refrescarTextos();
+iniciar().catch(avisar);
+requestAnimationFrame(tic);
