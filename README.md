@@ -1,6 +1,6 @@
 # Laboratorio de concurrencia, paralelismo e hilos
 
-**Grupo 1 · Sistemas Distribuidos** — Un servidor real en Python atiende 10 solicitudes de usuarios de tres formas (**secuencial**, **concurrente** con hilos y **paralela** con procesos) y una visualización 3D en Three.js muestra en tiempo real cada evento: qué hilo o proceso toma cada solicitud, en qué núcleo de la CPU corre, cuánto espera en cola y cuándo responde.
+**Grupo 1 · Sistemas Distribuidos** — Un servidor real en Python atiende 10 solicitudes de usuarios de tres formas (**secuencial**, **concurrente** con hilos y **paralela** con procesos). Una visualización 3D en Three.js lo muestra en tiempo real como una **cafetería**: los meseros son hilos, las mesas son solicitudes, las cafeteras son núcleos de la CPU y la cocina es la E/S.
 
 Nada está animado "de mentira": cada movimiento en pantalla corresponde a un evento real emitido por el código que se está ejecutando.
 
@@ -57,7 +57,7 @@ servidor/
   motor.py         los tres modelos de ejecución y el cálculo de métricas
   web.py           servidor HTTP + transmisión de eventos en vivo
 web/
-  escena.js        escena 3D: usuarios → procesos/hilos → respuestas, con la CPU detrás
+  escena.js        escena 3D de la cafetería: mesas, meseros, cafeteras, cocina y llave del GIL
   gantt.js         línea de tiempo en vivo
   app.js           controles, métricas, comparación, historial y exportación
 medir.py           mediciones definitivas para el documento (repite y promedia)
@@ -66,13 +66,24 @@ demo_carrera.py    condición de carrera con y sin candado (Lock)
 tests/             pruebas automáticas (pytest)
 ```
 
-## Cómo leer la visualización
+## Cómo leer la visualización: la cafetería
 
-- **Fichas**: cada una es una solicitud. Gris = en cola · azul con anillo = esperando E/S · naranja girando = calculando · verde = respuesta enviada.
-- **Carriles**: cada carril es un hilo (concurrente) o un proceso (paralelo). La ficha avanza por el carril según su progreso real.
-- **Caja translúcida**: el proceso. En concurrente hay una sola caja con varios hilos que comparten memoria; en paralelo, una caja por proceso.
-- **Barras de la CPU**: uso real de cada núcleo (psutil). La línea punteada une la ficha con el núcleo donde corre en ese momento (solo Linux permite leerlo por hilo).
-- **Línea de tiempo**: gris = tiempo en cola, color = trabajador que la atiende, marcas = cada evento de progreso. En CPU concurrente se ve cómo las barras se alargan porque los hilos se turnan.
+El servidor se muestra como una cafetería. Cada elemento corresponde a una pieza real del sistema:
+
+| En la cafetería | En el sistema | Qué muestra |
+| --- | --- | --- |
+| Mesa con cliente | Solicitud de un usuario | Aro gris mientras espera; color del mesero que la atiende; taza y aro verde al responder |
+| Mesero | Hilo (en paralelo, un proceso) | Va adonde trabaja de verdad según los eventos; su color es el mismo de la línea de tiempo |
+| Tapete y pizarra | Proceso y su memoria | Concurrente: un tapete y una pizarra para todos los hilos. Paralelo: uno por proceso |
+| Cafetera | Núcleo de la CPU | Brillo y vapor = uso real de ese núcleo (psutil) |
+| Cocina | E/S (base de datos, red, disco) | El mesero espera con un anillo azul sin ocupar ninguna cafetera |
+| Llave dorada | GIL | Solo el mesero que la tiene ejecuta código Python |
+
+- **Pedido de CPU**: el mesero camina a la cafetera del núcleo donde el sistema operativo lo está ejecutando. Si el sistema lo cambia de núcleo, el mesero cambia de cafetera. En Windows y macOS no se puede leer el núcleo por hilo, así que la cafetera se asigna de forma aproximada.
+- **La llave (GIL)** se infiere del orden de los eventos reales: queda sobre el último mesero que avanzó un pedido de CPU y vuelve a la pizarra cuando nadie calcula, por ejemplo mientras esperan en la cocina. En concurrente hay una sola llave y se ve saltar entre meseros; en paralelo cada proceso tiene la suya.
+- Caminar, el pedido que viaja de la mesa al mesero y la taza que vuelve a la mesa son animaciones visuales. Los tiempos que se miden son los de los eventos.
+- **Línea de tiempo**: gris = en cola, color = mesero que la atiende, marcas = cada evento de progreso.
+- La propia visualización consume CPU. Para las mediciones del documento usa `medir.py` con el navegador cerrado.
 
 ## Evidencia para el documento
 

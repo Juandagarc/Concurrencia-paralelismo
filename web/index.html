@@ -18,7 +18,7 @@
       <span class="logo" aria-hidden="true"></span>
       <div>
         <h1>Laboratorio de concurrencia y paralelismo</h1>
-        <p>Grupo 1 · Sistemas Distribuidos · un servidor real atiende 10 solicitudes</p>
+        <p>Grupo 1 · Sistemas Distribuidos · un servidor real atiende 10 solicitudes, contado como una cafetería</p>
       </div>
     </div>
     <div class="equipo" id="equipo">
@@ -63,13 +63,15 @@
     </section>
 
     <section class="leyenda">
-      <h2>Leyenda</h2>
+      <h2>La cafetería</h2>
       <ul>
-        <li><i style="background:var(--espera)"></i>En cola, esperando</li>
-        <li><i style="background:var(--io)"></i>Esperando E/S (el anillo gira)</li>
-        <li><i style="background:var(--cpu)"></i>Calculando en la CPU (gira)</li>
-        <li><i style="background:var(--listo)"></i>Respuesta enviada</li>
-        <li><i class="linea-l"></i>Núcleo donde corre ahora</li>
+        <li><i style="background:var(--espera)"></i><span><b>Mesa</b> = solicitud de un usuario (aro gris: esperando)</span></li>
+        <li><i style="background:var(--io)"></i><span><b>Mesero</b> = hilo; su color es el mismo de la línea de tiempo</span></li>
+        <li><i class="tapete"></i><span><b>Tapete y pizarra</b> = proceso y su memoria</span></li>
+        <li><i style="background:var(--cpu)"></i><span><b>Cafetera</b> = núcleo de CPU (brillo y vapor = uso real)</span></li>
+        <li><i style="background:#c2410c"></i><span><b>Cocina</b> = E/S: esperar sin usar la CPU</span></li>
+        <li><i class="llave"></i><span><b>Llave dorada</b> = GIL: solo quien la tiene ejecuta Python</span></li>
+        <li><i style="background:var(--listo)"></i><span><b>Taza en la mesa</b> = respuesta entregada</span></li>
       </ul>
     </section>
   </aside>

@@ -103,13 +103,17 @@ button:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
 
 .leyenda ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 6px; font-size: 12.5px; color: var(--tinta-suave); }
 .leyenda i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 8px; vertical-align: -1px; }
-.leyenda .linea-l { height: 0; border-top: 2px dashed var(--acento); border-radius: 0; width: 14px; vertical-align: 3px; }
+.leyenda li { display: flex; align-items: flex-start; }
+.leyenda li i { flex-shrink: 0; margin-top: 3px; }
+.leyenda b { color: var(--tinta); font-weight: 600; }
+.leyenda .tapete { background: rgba(125, 211, 252, 0.15); border: 1px solid #7dd3fc; }
+.leyenda .llave { background: #facc15; transform: rotate(45deg) scale(0.8); box-shadow: 0 0 8px #f59e0b; }
 
 /* ------------------------------------------------------------ escena */
 .escena { grid-area: escena; position: relative; overflow: hidden; background: radial-gradient(ellipse at 50% 30%, #0f1a2c 0%, var(--fondo) 70%); }
 .escena canvas, .capa-etiquetas { position: absolute; inset: 0; }
 .estado-escena {
-  position: absolute; top: 14px; left: 50%; transform: translateX(-50%); z-index: 2;
+  position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 2;
   background: rgba(13, 20, 32, 0.85); border: 1px solid var(--linea); border-radius: 999px;
   padding: 6px 14px; font-size: 13px; pointer-events: none; backdrop-filter: blur(6px);
   white-space: nowrap;
@@ -121,8 +125,22 @@ button:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
 .lbl { font-size: 11px; color: var(--tinta-suave); white-space: nowrap; pointer-events: none; }
 .lbl-zona { color: var(--tinta); font-weight: 600; font-size: 13px; text-align: center; padding-bottom: 6px; }
 .lbl-zona small { display: block; font-weight: 400; font-size: 11px; color: var(--tinta-suave); }
-.lbl-proceso { font: 600 11px var(--mono); color: #bae6fd; padding-bottom: 4px; }
-.lbl-proceso small { display: block; font-weight: 400; color: var(--tinta-suave); }
+.lbl-proceso { font: 600 11.5px var(--mono); color: #bae6fd; padding-top: 4px; }
+.lbl-proceso.derecha { text-align: right; }
+.lbl-proceso small { display: block; font-weight: 400; color: var(--tinta-suave); font-family: system-ui, sans-serif; }
+.lbl-mesero, .lbl-cliente, .lbl-cafetera {
+  text-align: center; line-height: 1.25; background: rgba(9, 14, 24, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.18); border-radius: 6px; padding: 2px 6px;
+}
+.lbl-mesero b { font: 600 11px var(--mono); }
+.lbl-mesero small, .lbl-cliente small, .lbl-cafetera small { display: block; font-size: 10.5px; color: var(--tinta-suave); }
+.lbl-cliente { font-size: 11px; }
+.lbl-cliente b { color: var(--tinta); }
+.lbl-cliente em { display: block; font-style: normal; font: 10.5px var(--mono); color: #cbd5e1; }
+.lbl-cliente.servida { border-color: rgba(52, 211, 153, 0.6); }
+.lbl-cliente.servida em { color: var(--listo); }
+.lbl-cafetera { font: 600 10.5px var(--mono); color: #a5f3fc; }
+.lbl-gil { font: 700 10px var(--mono); color: #facc15; text-shadow: 0 0 6px #000; }
 .lbl-carril { font: 11px var(--mono); color: var(--tinta); background: rgba(13,20,32,.75); padding: 1px 6px; border-radius: 5px; }
 .lbl-cpu { font: 600 11px var(--mono); color: #a5f3fc; padding: 0 0 4px 4px; }
 .lbl-nucleo { font: 10px var(--mono); color: var(--tinta-suave); }

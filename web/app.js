@@ -9,14 +9,14 @@ const ETQ_LOG = { ejecucion_inicio: 'ejecución', ejecucion_fin: 'total' };
 const COLOR_MODO = { secuencial: 'var(--sec)', concurrente: 'var(--con)', paralelo: 'var(--par)' };
 
 const CONCEPTO = {
-  secuencial: '<b>Una solicitud después de otra.</b> El hilo principal atiende la #1; cuando termina, la #2, y así. Mientras una solicitud espera, la CPU queda ociosa y las demás hacen fila.',
-  concurrente: '<b>Varias solicitudes progresan intercalándose.</b> Un pool de hilos dentro del mismo proceso comparte la memoria. Si un hilo espera E/S, otro avanza. En Python el GIL deja ejecutar código Python a un solo hilo a la vez: con carga de CPU se turnan y no hay aceleración.',
-  paralelo: '<b>Varias solicitudes se ejecutan al mismo tiempo.</b> Un pool de procesos, cada uno con memoria e intérprete propios, corre en núcleos distintos. Acelera el cálculo hasta el número de núcleos, a cambio del costo de crear procesos y comunicarlos (IPC).',
+  secuencial: '<b>Una solicitud después de otra.</b> Un solo mesero (hilo) atiende mesa por mesa: no toma el siguiente pedido hasta entregar el anterior. Si espera en la cocina, las cafeteras (núcleos) quedan quietas y las demás mesas hacen fila.',
+  concurrente: '<b>Varias solicitudes avanzan intercalándose.</b> Varios meseros (hilos) del mismo proceso comparten la pizarra (memoria). Mientras uno espera en la cocina, otro trabaja. Pero hay una sola llave (GIL): solo quien la tiene prepara en una cafetera, así que con pedidos de CPU se turnan.',
+  paralelo: '<b>Varias solicitudes se ejecutan al mismo tiempo.</b> Cada mesero es un proceso con su propia pizarra (memoria) y su propia llave (GIL), así que varios usan cafeteras (núcleos) a la vez. El costo: crear procesos tarda y se comunican por mensajes (IPC).',
 };
 const PISTA = {
-  io: 'Cada solicitud espera, como al consultar una base de datos: el hilo se bloquea y libera la CPU.',
-  cpu: 'Cada solicitud calcula sin parar: ocupa un núcleo entero y retiene el GIL.',
-  mixto: 'Las solicitudes impares esperan E/S y las pares calculan.',
+  io: 'Cada pedido se espera en la cocina, como una consulta a una base de datos: el mesero no usa ninguna cafetera mientras espera.',
+  cpu: 'Cada pedido se prepara en una cafetera sin parar: ocupa un núcleo entero y necesita la llave (GIL).',
+  mixto: 'Los pedidos impares se esperan en la cocina (E/S) y los pares se preparan en la barra (CPU).',
 };
 
 const estado = {
@@ -56,7 +56,7 @@ function previsualizar() {
   refrescarTextos();
   if (!estado.ocupado) {
     escena.reconfigurar({ modo: estado.modo, trabajadores: estado.trabajadores,
-      nucleos: estado.info?.nucleos ?? 4 });
+      nucleos: estado.info?.nucleos ?? 4, gil: estado.info?.gil ?? true });
   }
   pintarComparacion();
 }
@@ -125,13 +125,14 @@ function manejar(ev) {
       estado.modo = ev.modo; estado.escenario = ev.escenario;
       marcar('#modo', ev.modo); marcar('#escenario', ev.escenario);
       if (!estado.ocupado) bloquear(true);   // otra pestaña lanzó la ejecución
-      escena.reconfigurar({ modo: ev.modo, trabajadores: ev.trabajadores, nucleos: ev.nucleos, pid: ev.pid_servidor });
+      escena.reconfigurar({ modo: ev.modo, trabajadores: ev.trabajadores, nucleos: ev.nucleos,
+        pid: ev.pid_servidor, gil: estado.info?.gil ?? true });
       escena.crearSolicitudes(ev.solicitudes);
       gantt.reiniciar(ev.solicitudes);
       $('#log').innerHTML = '';
       estado.nEventos = 0;
-      const quien = ev.modo === 'secuencial' ? '1 hilo'
-        : `${ev.trabajadores} ${ev.modo === 'paralelo' ? 'procesos' : 'hilos'}`;
+      const quien = ev.modo === 'secuencial' ? '1 mesero'
+        : `${ev.trabajadores} meseros (${ev.modo === 'paralelo' ? 'procesos' : 'hilos'})`;
       $('#estado-escena').innerHTML = `Ejecutando · <b>${NOMBRE_MODO[ev.modo]}</b> · ${NOMBRE_ESC[ev.escenario]} · ${quien}`;
       ['#m-resp', '#m-arranque'].forEach((s) => { $(s).textContent = '—'; });
       $('#exp-json').disabled = $('#exp-csv').disabled = true;
