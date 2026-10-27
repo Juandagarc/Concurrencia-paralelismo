@@ -13,13 +13,14 @@ export class Gantt {
   }
 
   reiniciar(solicitudes) {
-    this.filas = solicitudes.map((s) => ({ s, inicio: null, fin: null, carril: null, marcas: [], etapas: [] }));
+    this.filas = solicitudes.map((s) => ({ s, llegada: null, inicio: null, fin: null, carril: null, marcas: [], etapas: [] }));
     this.ahora = 0;
     this.escala = 1;
   }
 
   _fila(id) { return this.filas.find((f) => f.s.id === id); }
 
+  llegada(ev) { const f = this._fila(ev.id); if (f) f.llegada = ev.t; }
   inicio(ev, carril) { const f = this._fila(ev.id); if (f) { f.inicio = ev.t; f.carril = carril; } }
   progreso(ev) { this._fila(ev.id)?.marcas.push(ev.t); }
   etapa(ev) { this._fila(ev.id)?.etapas.push({ nombre: ev.etapa, t: ev.t }); }
@@ -76,9 +77,14 @@ export class Gantt {
       ctx.font = '11px system-ui, sans-serif';
       ctx.fillText(`${f.s.usuario} · ${f.s.trabajo === 'io' ? 'E/S' : 'CPU'}`, 30, yc + 4);
 
-      const finCola = f.inicio ?? this.ahora;
-      ctx.fillStyle = 'rgba(148,163,184,0.18)';
-      ctx.fillRect(X(0), yc - bh / 2, Math.max(0, X(finCola) - X(0)), bh);
+      // Gris = en cola: desde que el cliente llega hasta que lo atienden
+      if (f.llegada != null) {
+        const finCola = f.inicio ?? this.ahora;
+        ctx.fillStyle = 'rgba(148,163,184,0.22)';
+        ctx.fillRect(X(f.llegada), yc - bh / 2, Math.max(0, X(finCola) - X(f.llegada)), bh);
+        ctx.fillStyle = suave;
+        ctx.fillRect(X(f.llegada) - 1, yc - bh / 2 - 2, 2, bh + 4);     // marca de llegada
+      }
       if (f.inicio != null) {
         const color = PALETA[f.carril % PALETA.length];
         const hasta = f.fin ?? this.ahora;

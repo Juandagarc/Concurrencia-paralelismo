@@ -23,6 +23,7 @@ const PISTA = {
 
 const estado = {
   modo: 'secuencial', escenario: 'io', trabajadores: 4, duracion: 1, realista: true,
+  llegadas: 'escalonadas', llegaron: 0,
   info: null, ocupado: false, t0: 0, corriendo: false,
   carriles: new Map(), listas: 0, activas: new Set(), solicitudes: [],
   eventos: [], ultimaEjecucion: null, historial: [], esperando: null, nEventos: 0,
@@ -51,6 +52,9 @@ function marcar(id, valor) {
 function refrescarTextos() {
   $('#concepto').innerHTML = CONCEPTO[estado.modo];
   $('#pista-escenario').textContent = PISTA[estado.escenario];
+  $('#pista-llegadas').textContent = estado.llegadas === 'escalonadas'
+    ? 'Los clientes entran de a uno, con separaciones al azar (en promedio 0,6 s). El patrón es el mismo en cada prueba para comparar justo.'
+    : 'Los 10 clientes llegan en el mismo instante: el peor caso para la fila.';
   // El control nunca se bloquea por el modo: en secuencial muestra 1 y, si se
   // mueve, la página pasa a concurrente (ver el manejador de 'input').
   $('#v-trab').textContent = estado.modo === 'secuencial' ? '1 (secuencial)' : estado.trabajadores;
@@ -65,13 +69,15 @@ function previsualizar() {
   refrescarTextos();
   if (!estado.ocupado) {
     escena.reconfigurar({ modo: estado.modo, trabajadores: estado.trabajadores,
-      nucleos: estado.info?.nucleos ?? 4, gil: estado.info?.gil ?? true, realista: estado.realista });
+      nucleos: estado.info?.nucleos ?? 4, topologia: estado.info?.topologia,
+      gil: estado.info?.gil ?? true, realista: estado.realista });
   }
   pintarComparacion();
 }
 
 segmentos('#modo', 'modo', previsualizar);
 segmentos('#escenario', 'escenario', previsualizar);
+segmentos('#llegadas', 'llegadas', previsualizar);
 $('#trabajadores').addEventListener('input', (e) => {
   estado.trabajadores = +e.target.value;
   if (estado.modo === 'secuencial') {      // secuencial siempre es 1: mover el control pasa a concurrente
@@ -103,7 +109,8 @@ async function ejecutar(modo) {
   const r = await fetch('/api/ejecutar', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ modo, escenario: estado.escenario,
-      trabajadores: estado.trabajadores, duracion: estado.duracion, realista: estado.realista }),
+      trabajadores: estado.trabajadores, duracion: estado.duracion, realista: estado.realista,
+      llegadas: estado.llegadas }),
   });
   const datos = await r.json();
   if (!r.ok) throw new Error(datos.error || 'No se pudo ejecutar');
@@ -141,12 +148,15 @@ function conectar() {
 function manejar(ev) {
   switch (ev.tipo) {
     case 'ejecucion_inicio': {
-      Object.assign(estado, { t0: performance.now(), corriendo: true, listas: 0,
+      Object.assign(estado, { t0: performance.now(), corriendo: true, listas: 0, llegaron: 0,
         solicitudes: ev.solicitudes, eventos: [], carriles: new Map(), activas: new Set() });
       estado.modo = ev.modo; estado.escenario = ev.escenario; estado.realista = !!ev.realista;
+      estado.llegadas = ev.llegadas ?? 'juntas';
+      marcar('#llegadas', estado.llegadas);
       marcar('#modo', ev.modo); marcar('#escenario', ev.escenario);
       if (!estado.ocupado) bloquear(true);   // otra pestaña lanzó la ejecución
       escena.reconfigurar({ modo: ev.modo, trabajadores: ev.trabajadores, nucleos: ev.nucleos,
+        topologia: estado.info?.topologia,
         pid: ev.pid_servidor, gil: estado.info?.gil ?? true, realista: !!ev.realista });
       escena.crearSolicitudes(ev.solicitudes);
       gantt.reiniciar(ev.solicitudes);
@@ -159,6 +169,10 @@ function manejar(ev) {
       $('#exp-json').disabled = $('#exp-csv').disabled = true;
       break;
     }
+    case 'llegada':
+      estado.llegaron++;
+      escena.llegada(ev); gantt.llegada(ev);
+      break;
     case 'inicio': {
       if (!estado.carriles.has(ev.trabajador)) estado.carriles.set(ev.trabajador, estado.carriles.size);
       const carril = estado.carriles.get(ev.trabajador);
@@ -221,7 +235,8 @@ function registrar(ev) {
     detalle = `#${ev.id} ${NOMBRE_ETAPA[ev.etapa] ?? ev.etapa}${dur} · ${ev.trabajador}`;
     if (ev.etapa.startsWith('caja')) clase = 'caja';
   } else if (ev.tipo === 'llegada') {
-    detalle = `#${ev.id} ${ev.usuario} · ${NOMBRE_ESC[ev.trabajo]}`;
+    const pedido = estado.solicitudes.find((s) => s.id === ev.id)?.producto;
+    detalle = `#${ev.id} ${ev.usuario} llega${pedido ? ` y pide ${pedido}` : ''} · ${NOMBRE_ESC[ev.trabajo]}`;
     clase = 'sistema';
   } else if (ev.tipo === 'ejecucion_inicio') {
     detalle = `${NOMBRE_MODO[ev.modo]} · ${ev.trabajadores} trabajador(es) · servidor pid ${ev.pid_servidor}`;
@@ -241,10 +256,10 @@ function registrar(ev) {
 
 // ----------------------------------------------------- comparación e historial
 // Solo se comparan ejecuciones con la misma carga, duración y modo (tiempo real o no)
-const clave = (r) => `${r.escenario}|${(+r.duracion).toFixed(1)}|${r.realista ? 'TR' : 'puro'}`;
+const clave = (r) => `${r.escenario}|${(+r.duracion).toFixed(1)}|${r.realista ? 'TR' : 'puro'}|${r.llegadas ?? 'juntas'}`;
 
-function ultimoPor(escenario, duracion, modo, realista) {
-  const buscada = clave({ escenario, duracion, realista });
+function ultimoPor(escenario, duracion, modo, realista, llegadas) {
+  const buscada = clave({ escenario, duracion, realista, llegadas });
   for (let i = estado.historial.length - 1; i >= 0; i--) {
     const r = estado.historial[i];
     if (r.modo === modo && clave(r) === buscada) return r;
@@ -270,8 +285,9 @@ function pintarComparacion(ref) {
   const esc = ref?.escenario ?? estado.escenario;
   const dur = ref ? +ref.duracion : estado.duracion;
   const tr = ref ? !!ref.realista : estado.realista;
-  $('#comp-titulo').textContent = `${NOMBRE_ESC[esc]} · ${dur.toFixed(1)} s por solicitud${tr ? ' · tiempo real' : ''}`;
-  const filas = ['secuencial', 'concurrente', 'paralelo'].map((m) => [m, ultimoPor(esc, dur, m, tr)]);
+  const lleg = ref ? (ref.llegadas ?? 'juntas') : estado.llegadas;
+  $('#comp-titulo').textContent = `${NOMBRE_ESC[esc]} · ${dur.toFixed(1)} s · llegadas ${lleg}${tr ? ' · tiempo real' : ''}`;
+  const filas = ['secuencial', 'concurrente', 'paralelo'].map((m) => [m, ultimoPor(esc, dur, m, tr, lleg)]);
   const max = Math.max(0.001, ...filas.map(([, r]) => r?.total ?? 0));
   $('#barras').innerHTML = filas.map(([m, r]) => {
     const ancho = r ? Math.max(4, (r.total / max) * 100) : 0;
@@ -303,7 +319,7 @@ function pintarHistorial(nuevo = false) {
     const a = aceleracion(r);
     return `<tr class="${nuevo && i === 0 ? 'nuevo' : ''}">
       <td><span class="etq-modo"><i style="background:${COLOR_MODO[r.modo]}"></i>${NOMBRE_MODO[r.modo]}</span></td>
-      <td>${NOMBRE_ESC[r.escenario]} ${(+r.duracion).toFixed(1)}s${r.realista ? ' <span class="tr" title="tiempo real">TR</span>' : ''}</td><td>${r.trabajadores}</td>
+      <td>${NOMBRE_ESC[r.escenario]} ${(+r.duracion).toFixed(1)}s${r.llegadas === 'escalonadas' ? ' <span class="tr" title="llegadas escalonadas">ESC</span>' : ''}${r.realista ? ' <span class="tr" title="tiempo real">TR</span>' : ''}</td><td>${r.trabajadores}</td>
       <td>${r.total.toFixed(2)}</td><td>${a ? a.toFixed(1) : '—'}</td></tr>`;
   }).join('');
 }
@@ -342,7 +358,7 @@ function tic() {
   $('#m-listas').textContent = `${estado.listas} / ${n}`;
   if (estado.solicitudes.length) {
     $('#m-activas').textContent = estado.activas.size;
-    $('#m-cola').textContent = n - estado.listas - estado.activas.size;
+    $('#m-cola').textContent = Math.max(0, estado.llegaron - estado.listas - estado.activas.size);
   }
   gantt.dibujar();
   requestAnimationFrame(tic);
@@ -357,12 +373,12 @@ async function iniciar() {
     if (guardado !== null) estado.realista = guardado === '1';
   } catch { /* sin almacenamiento: queda el valor por defecto */ }
   const nucleos = info.nucleos ?? 4;
-  estado.trabajadores = Math.min(Math.max(2, nucleos), 8);
+  estado.trabajadores = 4;                // una cafetería real tiene pocos meseros
   const slider = $('#trabajadores');
-  slider.max = 16;
+  slider.max = 8;
   slider.value = estado.trabajadores;
   $('#equipo').insertAdjacentHTML('afterbegin', `
-    <span class="chip"><b>${nucleos}</b> núcleos</span>
+    <span class="chip" title="Cafeteras = núcleos físicos · boquillas = núcleos lógicos${info.topologia_exacta ? '' : ' (agrupación aproximada)'}"><b>${info.topologia?.length ?? nucleos}</b> físicos · <b>${nucleos}</b> lógicos</span>
     <span class="chip">Python <b>${info.python}</b></span>
     <span class="chip" title="Global Interpreter Lock">GIL <b>${info.gil ? 'activo' : 'desactivado'}</b></span>
     <span class="chip" title="Linux permite leer en qué núcleo corre cada hilo">núcleo por hilo <b>${info.nucleo_detectable ? 'sí' : 'no'}</b></span>

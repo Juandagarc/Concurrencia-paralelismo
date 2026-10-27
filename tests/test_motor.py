@@ -3,7 +3,7 @@
 import pytest
 
 from servidor import motor
-from servidor.solicitudes import generar
+from servidor.solicitudes import MENU_CPU, MENU_IO, generar
 from servidor.trabajo import calibrar
 
 OPS = calibrar(muestra=100_000, intentos=1)
@@ -45,7 +45,8 @@ def test_paralelo_usa_procesos_distintos():
 def test_generar_alterna_en_mixto():
     lote = generar("mixto", 1.0, OPS)
     assert [s["trabajo"] for s in lote[:4]] == ["io", "cpu", "io", "cpu"]
-    assert round(sum(s["duracion"] for s in lote), 3) == 10.0
+    assert sum(s["duracion"] for s in lote) == pytest.approx(10.0, abs=0.01)
+    assert {s["producto"] for s in lote[:2]} <= {p for p, _ in MENU_IO + MENU_CPU}
 
 
 @pytest.mark.parametrize("modo", ["concurrente", "paralelo"])
@@ -61,3 +62,14 @@ def test_tiempo_real_la_caja_atiende_uno_a_la_vez(modo):
     assert all(b[0] >= a[1] - 1e-3 for a, b in zip(tramos, tramos[1:]))
     etapas = [e["etapa"] for e in ev if e["tipo"] == "etapa" and e["id"] == 1]
     assert etapas == ["pedido", "preparar", "caja_camino", "caja_espera", "caja_cobro", "entrega"]
+
+
+def test_llegadas_escalonadas_se_respetan():
+    lote = generar("io", 0.05, OPS, llegadas="escalonadas")
+    assert lote[0]["llegada"] == 0 and lote[-1]["llegada"] > 1
+    r = motor.ejecutar("concurrente", lote, trabajadores=4)
+    llegada = {e["id"]: e["t"] for e in r["eventos"] if e["tipo"] == "llegada"}
+    for s in lote:
+        assert llegada[s["id"]] >= s["llegada"] - 0.01      # no llega antes de su hora
+    for f in r["solicitudes"]:
+        assert f["espera"] >= 0 and f["respuesta"] >= f["servicio"]

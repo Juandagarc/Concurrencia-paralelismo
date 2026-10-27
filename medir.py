@@ -42,6 +42,8 @@ def main() -> None:
                    help="hilos / procesos del pool (default: núcleos del equipo)")
     p.add_argument("--escenarios", nargs="+", default=["io", "cpu"],
                    choices=ESCENARIOS)
+    p.add_argument("--llegadas", choices=["juntas", "escalonadas"], default="juntas",
+                   help="los 10 clientes llegan juntos o de a uno (default: juntas)")
     p.add_argument("--tiempo-real", action="store_true",
                    help="cafetería completa: pedido, preparar, caja con Lock y entrega")
     a = p.parse_args()
@@ -61,6 +63,7 @@ def main() -> None:
         "trabajadores": a.trabajadores,
         "repeticiones": a.repeticiones,
         "tiempo_real": a.tiempo_real,
+        "llegadas": a.llegadas,
     }
     (SALIDA / "equipo.json").write_text(json.dumps(equipo, indent=2, ensure_ascii=False),
                                        encoding="utf-8")
@@ -69,7 +72,7 @@ def main() -> None:
 
     filas, resumen = [], []
     for esc in a.escenarios:
-        lote = generar(esc, a.duracion, ops)
+        lote = generar(esc, a.duracion, ops, llegadas=a.llegadas)
         base = None
         for modo in motor.MODOS:
             tiempos, respuestas = [], []

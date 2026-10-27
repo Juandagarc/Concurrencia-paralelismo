@@ -44,6 +44,33 @@ ETAPAS = {
 _CONTEXTO = mp.get_context("spawn")
 
 
+def topologia_cpu() -> tuple[list[list[int]], bool]:
+    """Agrupa los núcleos lógicos por núcleo físico.
+
+    Devuelve (grupos, exacta). Cada grupo es un núcleo físico con sus núcleos
+    lógicos (hilos de hardware, p. ej. Hyper-Threading). En Linux se lee la
+    topología real; en otros sistemas se asume la numeración habitual de
+    Windows (los lógicos de un mismo núcleo físico son consecutivos).
+    """
+    n = os.cpu_count() or 1
+    grupos: dict[str, list[int]] = {}
+    try:
+        for i in range(n):
+            with open(f"/sys/devices/system/cpu/cpu{i}/topology/thread_siblings_list",
+                      encoding="ascii") as f:
+                grupos.setdefault(f.read().strip(), []).append(i)
+        lista = sorted(grupos.values(), key=lambda g: g[0])
+        if sum(len(g) for g in lista) == n:
+            return lista, True
+    except OSError:
+        pass
+    fisicos = psutil.cpu_count(logical=False) if psutil else None
+    if not fisicos or n % fisicos:
+        fisicos = n
+    k = n // fisicos
+    return [list(range(i * k, (i + 1) * k)) for i in range(fisicos)], False
+
+
 def gil_activo() -> bool:
     """False solo en la compilación experimental sin GIL (python3.13t)."""
     fn = getattr(sys, "_is_gil_enabled", None)
@@ -64,20 +91,23 @@ def _muestrear_cpu(detener: threading.Event, emitir: Callable, t0: float) -> Non
 def resumir(modo: str, trabajadores: int, solicitudes: list[dict],
             eventos: list[dict], total: float) -> dict:
     """Calcula las métricas de una ejecución a partir de sus eventos reales."""
+    llegada = {e["id"]: e["t"] for e in eventos if e["tipo"] == "llegada"}
     inicio = {e["id"]: e for e in eventos if e["tipo"] == "inicio"}
     fin = {e["id"]: e for e in eventos if e["tipo"] == "fin"}
     filas = []
     for s in solicitudes:
         i, f = inicio[s["id"]], fin[s["id"]]
+        lleg = llegada.get(s["id"], 0.0)
         filas.append({
             "id": s["id"],
             "usuario": s["usuario"],
             "trabajo": s["trabajo"],
             "trabajador": i["trabajador"],
             "pid": i["pid"],
-            "espera": i["t"],              # tiempo en cola antes de ser atendida
+            "llegada": lleg,
+            "espera": round(i["t"] - lleg, 4),      # en cola desde que llegó hasta que la toman
             "servicio": round(f["t"] - i["t"], 4),
-            "respuesta": f["t"],           # todas llegan en t = 0
+            "respuesta": round(f["t"] - lleg, 4),   # desde que llegó hasta que recibe la respuesta
         })
     nucleos = {e["nucleo"] for e in eventos
                if e.get("nucleo") is not None and e["tipo"] in ("inicio", "progreso")}
@@ -86,6 +116,7 @@ def resumir(modo: str, trabajadores: int, solicitudes: list[dict],
         "trabajadores": trabajadores,
         "total": round(total, 4),
         "arranque": round(min(r["espera"] for r in filas), 4),
+        "espera_promedio": round(sum(r["espera"] for r in filas) / len(filas), 4),
         "respuesta_promedio": round(sum(r["respuesta"] for r in filas) / len(filas), 4),
         "respuesta_max": round(max(r["respuesta"] for r in filas), 4),
         "trabajadores_usados": len({r["trabajador"] for r in filas}),
@@ -147,9 +178,16 @@ def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
         "nucleos": os.cpu_count(), "solicitudes": solicitudes,
         "realista": realista, "etapas": etapas,
     })
-    for s in solicitudes:
-        cola.put({"tipo": "llegada", "id": s["id"], "t": 0.0,
+
+    def recibir(s: dict) -> None:
+        """Espera la hora de llegada del cliente y registra su llegada real."""
+        falta = s.get("llegada", 0.0) - (time.time() - t0)
+        if falta > 0:
+            time.sleep(falta)
+        cola.put({"tipo": "llegada", "id": s["id"], "t": round(time.time() - t0, 4),
                   "usuario": s["usuario"], "trabajo": s["trabajo"]})
+
+    orden = sorted(solicitudes, key=lambda s: (s.get("llegada", 0.0), s["id"]))
 
     detener = threading.Event()
     muestreador = None
@@ -160,16 +198,25 @@ def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
 
     try:
         if modo == "secuencial":
-            for s in solicitudes:
-                atender(s, cola, t0, caja, etapas)
-        elif modo == "concurrente":
-            with ThreadPoolExecutor(max_workers=trabajadores,
-                                    thread_name_prefix="Hilo") as pool:
-                list(pool.map(lambda s: atender(s, cola, t0, caja, etapas), solicitudes))
+            # Un hilo "recepcionista" anota las llegadas; el único trabajador
+            # (este hilo) atiende la fila en orden, una solicitud tras otra.
+            fila: queue.Queue = queue.Queue()
+            recepcion = threading.Thread(
+                target=lambda: [recibir(s) or fila.put(s) for s in orden],
+                name="recepcion", daemon=True)
+            recepcion.start()
+            for _ in orden:
+                atender(fila.get(), cola, t0, caja, etapas)
+            recepcion.join()
         else:
-            with ProcessPoolExecutor(max_workers=trabajadores,
-                                     mp_context=_CONTEXTO) as pool:
-                futuros = [pool.submit(atender, s, cola, t0, caja, etapas) for s in solicitudes]
+            Pool = ThreadPoolExecutor if modo == "concurrente" else ProcessPoolExecutor
+            opciones = ({"thread_name_prefix": "Hilo"} if modo == "concurrente"
+                        else {"mp_context": _CONTEXTO})
+            with Pool(max_workers=trabajadores, **opciones) as pool:
+                futuros = []
+                for s in orden:            # cada solicitud entra al pool cuando llega
+                    recibir(s)
+                    futuros.append(pool.submit(atender, s, cola, t0, caja, etapas))
                 for f in futuros:
                     f.result()
         total = time.time() - t0

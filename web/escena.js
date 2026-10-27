@@ -249,27 +249,41 @@ function crearMesa() {
   return g;
 }
 
-function crearCafetera() {
+/** Máquina de espresso = un núcleo FÍSICO. Cada boquilla = un núcleo LÓGICO
+ *  (hilo de hardware). Dos boquillas comparten la caldera, como dos hilos de
+ *  Hyper-Threading comparten las unidades de un mismo núcleo. */
+const PASO_BOQUILLA = 0.42;
+function crearMaquina(nBoquillas) {
   const g = new THREE.Group();
-  const cuerpo = new THREE.Mesh(G.cafCuerpo, M.metal);
+  const ancho = 0.45 + PASO_BOQUILLA * nBoquillas;
+  const cuerpo = new THREE.Mesh(new THREE.BoxGeometry(ancho, 0.82, 0.5), M.metal);
   cuerpo.position.y = 0.41;
-  const pantallaM = new THREE.MeshStandardMaterial({ color: '#0b1220', emissive: '#22d3ee', emissiveIntensity: 0 });
-  const pantalla = new THREE.Mesh(G.pantalla, pantallaM);
-  pantalla.position.set(0, 0.62, 0.251);
-  const boquilla = new THREE.Mesh(G.boquilla, M.metalOscuro);
-  boquilla.position.set(0, 0.3, 0.2);
-  const taza = crearTaza();
-  taza.position.set(0, 0, 0.18);
-  taza.scale.setScalar(0.9);
-  const vapor = [0, 1, 2].map(() => {
-    const m = new THREE.Mesh(G.vapor, new THREE.MeshBasicMaterial({
-      color: '#e2e8f0', transparent: true, opacity: 0, depthWrite: false }));
-    m.position.y = 0.9;
-    g.add(m);
-    return m;
-  });
-  g.add(cuerpo, pantalla, boquilla, taza);
-  return { g, pantallaM, vapor };
+  const caldera = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, ancho * 0.8, 16), M.metalOscuro);
+  caldera.rotation.z = Math.PI / 2;
+  caldera.position.set(0, 0.92, -0.05);
+  g.add(cuerpo, caldera);
+  const boquillas = [];
+  for (let b = 0; b < nBoquillas; b++) {
+    const bx = (b - (nBoquillas - 1) / 2) * PASO_BOQUILLA;
+    const pantallaM = new THREE.MeshStandardMaterial({ color: '#0b1220', emissive: '#22d3ee', emissiveIntensity: 0 });
+    const pantalla = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.13), pantallaM);
+    pantalla.position.set(bx, 0.62, 0.251);
+    const boquilla = new THREE.Mesh(G.boquilla, M.metalOscuro);
+    boquilla.position.set(bx, 0.3, 0.2);
+    const taza = crearTaza();
+    taza.position.set(bx, 0, 0.18);
+    taza.scale.setScalar(0.8);
+    const vapor = [0, 1].map(() => {
+      const m = new THREE.Mesh(G.vapor, new THREE.MeshBasicMaterial({
+        color: '#e2e8f0', transparent: true, opacity: 0, depthWrite: false }));
+      m.position.set(bx, 1.05, 0);
+      g.add(m);
+      return m;
+    });
+    g.add(pantalla, boquilla, taza);
+    boquillas.push({ bx, pantallaM, vapor });
+  }
+  return { g, boquillas, ancho };
 }
 
 // ================================================================= escena
@@ -380,7 +394,7 @@ export class Escena {
       e.position.set(x, y, z);
       s.add(e);
     };
-    zona('Barra', 'cada cafetera es un núcleo de la CPU', bx, 3.25, Z_BARRA - 0.8);
+    zona('Barra', 'cada máquina es un núcleo físico; cada boquilla, un núcleo lógico', bx, 3.25, Z_BARRA - 0.8);
     zona('Cocina · E/S', 'esperar aquí no ocupa ninguna cafetera', kx, 3.25, Z_BARRA - 0.1);
     this._construirCaja();
   }
@@ -448,7 +462,7 @@ export class Escena {
 
   // -------------------------------------------------------- reconfigurar
   /** Arma el personal según el modelo: cuántos meseros, procesos y llaves. */
-  reconfigurar({ modo, trabajadores, nucleos, pid, gil = true, realista = false }) {
+  reconfigurar({ modo, trabajadores, nucleos, topologia, pid, gil = true, realista = false }) {
     this._vaciar(this.personal);
     this.meseros = [];
     this.llaves = [];
@@ -546,29 +560,45 @@ export class Escena {
       });
     }
 
-    const k = Math.max(1, nucleos || 1);
-    if (k !== this.k) this._construirCafeteras(k);
+    // Topología real: una máquina por núcleo físico, una boquilla por núcleo lógico
+    const grupos = topologia?.length ? topologia
+      : Array.from({ length: Math.max(1, nucleos || 1) }, (_, i) => [i]);
+    const clave = JSON.stringify(grupos);
+    if (clave !== this.k) this._construirCafeteras(grupos, clave);
   }
 
-  _construirCafeteras(k) {
+  _construirCafeteras(grupos, clave) {
     this._vaciar(this.barra);
-    this.cafeteras = [];
-    this.k = k;
-    const sp = Math.min(3.2, (BARRA.x1 - BARRA.x0 - 1) / k);
-    const x0 = (BARRA.x0 + BARRA.x1) / 2 - (k * sp) / 2;
-    const esc = Math.min(1.3, sp / 0.95);
-    for (let j = 0; j < k; j++) {
-      const c = crearCafetera();
-      const x = x0 + (j + 0.5) * sp;
-      c.g.position.set(x, 1.06, Z_BARRA);
-      c.g.scale.setScalar(esc);
+    this.cafeteras = [];        // indexado por núcleo LÓGICO (lo que reporta el sistema)
+    this.maquinas = [];
+    this.k = clave;
+    const n = grupos.length;
+    const maxBoq = Math.max(...grupos.map((g) => g.length));
+    const sp = Math.min(3.2, (BARRA.x1 - BARRA.x0 - 1) / n);
+    const x0 = (BARRA.x0 + BARRA.x1) / 2 - (n * sp) / 2;
+    const esc = Math.min(1.3, (sp * 0.85) / (0.45 + PASO_BOQUILLA * maxBoq));
+    const corto = n > 6;
+    grupos.forEach((logicos, f) => {
+      const maq = crearMaquina(logicos.length);
+      const mx = x0 + (f + 0.5) * sp;
+      maq.g.position.set(mx, 1.06, Z_BARRA);
+      maq.g.scale.setScalar(esc);
       const lbl = etiqueta('', 'lbl lbl-cafetera', 0.5, 0.5);
-      lbl.position.set(x, 2.3, Z_BARRA - 0.68);   // rótulo en la pared, sobre su cafetera
-      this.barra.add(c.g, lbl);
-      const caf = { ...c, x, sp, j, lbl, uso: 0, objetivo: 0, corto: k > 6 };
-      this.cafeteras.push(caf);
-      this._lblCafetera(caf, 0);
-    }
+      lbl.position.set(mx, 2.3, Z_BARRA - 0.68);   // rótulo en la pared, sobre su máquina
+      this.barra.add(maq.g, lbl);
+      const maquina = { f, lbl, corto, boquillas: [] };
+      logicos.forEach((j, b) => {
+        const boq = maq.boquillas[b];
+        const caf = { ...boq, j, x: mx + boq.bx * esc,
+          sp: logicos.length > 1 ? PASO_BOQUILLA * esc : sp, uso: 0, objetivo: 0, pct: 0, maquina };
+        this.cafeteras[j] = caf;
+        maquina.boquillas.push(caf);
+      });
+      this.maquinas.push(maquina);
+      this._lblMaquina(maquina);
+    });
+    // Si el sistema reporta un núcleo fuera de la topología, se usa la primera boquilla
+    for (let j = 0; j < this.cafeteras.length; j++) this.cafeteras[j] ??= this.maquinas[0].boquillas[0];
   }
 
   // ------------------------------------------------------------- clientes
@@ -587,21 +617,23 @@ export class Escena {
       p.g.position.set(mesa.x, 0, mesa.z - 0.95);
       p.g.scale.setScalar(0.001);
       const lbl = etiqueta(
-        `<b>#${s.id} ${s.usuario}</b> · ${s.trabajo === 'io' ? 'E/S' : 'CPU'}<em>esperando</em>`,
+        `<b>#${s.id} ${s.usuario}</b><small>${s.producto ?? ''} · ${s.trabajo === 'io' ? 'cocina, E/S' : 'máquina, CPU'}</small><em>esperando</em>`,
         'lbl lbl-cliente', 0.5, 1);
       lbl.position.set(0, 2.05, 0);
+      lbl.visible = false;                 // aparece cuando el cliente llega
       p.g.add(lbl);
       const aro = new THREE.Mesh(G.aro, new THREE.MeshBasicMaterial({
         color: COL.espera, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false }));
       aro.rotation.x = -Math.PI / 2;
       aro.position.set(mesa.x, 0.025, mesa.z);
+      aro.visible = false;
       const taza = crearTaza();
       taza.position.set(mesa.x + 0.15, 0.765, mesa.z + 0.15);
       taza.visible = false;
       this.comensales.add(p.g, aro, taza);
       this.clientes.set(s.id, {
         s, ...p, lbl, estadoEl: lbl.element.querySelector('em'), aro, taza, mesa,
-        estado: 'espera', retraso: i * 0.05, vida: 0, salto: 0,
+        estado: 'espera', llego: false, desde: 0, vida: 0, salto: 0,
       });
     });
   }
@@ -618,7 +650,7 @@ export class Escena {
       const j = m.nucleo != null && m.nucleo < this.cafeteras.length
         ? m.nucleo : m.idx % this.cafeteras.length;
       const c = this.cafeteras[j];
-      const off = ((m.idx % 3) - 1) * Math.min(0.45, c.sp * 0.35);
+      const off = ((m.idx % 3) - 1) * Math.min(0.4, c.sp * 0.45);
       return new THREE.Vector3(c.x + off, 0, Z_PUESTO);
     }
     const n = this.meseros.length;
@@ -675,14 +707,37 @@ export class Escena {
     m.lbl.element.innerHTML = `<b style="color:${m.color}">${m.nombre}</b><small>${sub}</small>`;
   }
 
-  _lblCafetera(c, u) {
-    c.lbl.element.innerHTML = c.corto ? `${c.j}<small>${u}%</small>` : `núcleo ${c.j}<small>${u}% de uso</small>`;
+  _lblMaquina(maq) {
+    const b = maq.boquillas;
+    if (b.length === 1) {               // sin Hyper-Threading: un núcleo = una boquilla
+      maq.lbl.element.innerHTML = maq.corto ? `${b[0].j}<small>${b[0].pct}%</small>`
+        : `núcleo ${b[0].j}<small>${b[0].pct}% de uso</small>`;
+      return;
+    }
+    if (maq.corto) {                    // muchas máquinas: rótulo mínimo; el uso se ve en brillo y vapor
+      maq.lbl.element.innerHTML = `F${maq.f}`;
+      maq.lbl.element.title = b.map((c) => `lógico ${c.j}: ${c.pct}%`).join(' · ');
+      return;
+    }
+    const usos = b.map((c) => `${c.j}: ${c.pct}%`).join(' · ');
+    maq.lbl.element.innerHTML = `núcleo físico ${maq.f}<small>lógicos ${usos}</small>`;
   }
 
   _vuelo(obj, desde, hasta, dur, altura, alTerminar) {
     obj.position.copy(desde);
     this.efectos.add(obj);
     this.vuelos.push({ obj, desde: desde.clone(), hasta, t: 0, dur, altura, alTerminar });
+  }
+
+  /** El cliente entra y se sienta en su mesa (evento real de llegada). */
+  llegada(ev) {
+    const c = this.clientes.get(ev.id);
+    if (!c || c.llego) return;
+    c.llego = true;
+    c.desde = performance.now();
+    c.vida = 0;
+    c.lbl.visible = true;
+    c.aro.visible = true;
   }
 
   inicio(ev, carril) {
@@ -866,10 +921,11 @@ export class Escena {
   cpu(uso) {
     uso.forEach((u, j) => {
       const c = this.cafeteras[j];
-      if (!c) return;
+      if (!c || c.j !== j) return;
       c.objetivo = u / 100;
-      this._lblCafetera(c, Math.round(u));
+      c.pct = Math.round(u);
     });
+    for (const maq of this.maquinas ?? []) this._lblMaquina(maq);
   }
 
   // ------------------------------------------------------------- cámara
@@ -1005,23 +1061,24 @@ export class Escena {
       c.pantallaM.emissive.setHSL(0.52 - c.uso * 0.45, 0.9, 0.5);
       c.pantallaM.emissiveIntensity = 0.15 + c.uso * 2;
       c.vapor.forEach((v, i) => {
-        const f = (t * 0.8 + i / 3) % 1;
-        v.position.y = 0.9 + f * 0.9;
-        v.position.x = Math.sin(t * 2 + i) * 0.06;
+        const f = (t * 0.8 + i / 2 + c.j * 0.13) % 1;
+        v.position.y = 1.05 + f * 0.9;
+        v.position.x = c.bx + Math.sin(t * 2 + i) * 0.06;
         v.scale.setScalar(0.6 + f * 1.4);
         v.material.opacity = c.uso * (1 - f) * 0.7;
       });
     }
 
-    const ahora = this.tLlegada ? (performance.now() - this.tLlegada) / 1000 : 0;
     const escribir = t - this.ultimoTexto > 0.1;
     if (escribir) this.ultimoTexto = t;
     for (const c of this.clientes.values()) {
+      if (!c.llego) { c.g.scale.setScalar(0.001); continue; }   // todavía no llega
       c.vida += dt;
-      const a = THREE.MathUtils.clamp((c.vida - c.retraso) / 0.35, 0, 1);
+      const a = THREE.MathUtils.clamp(c.vida / 0.35, 0, 1);
       c.g.scale.setScalar(a < 1 ? 0.001 + rebote(a) : 1);
       if (c.estado === 'espera') {
-        if (escribir) c.estadoEl.textContent = `esperando ${ahora.toFixed(1)} s`;
+        const espera = (performance.now() - c.desde) / 1000;
+        if (escribir) c.estadoEl.textContent = `esperando ${espera.toFixed(1)} s`;
         c.aro.material.opacity = 0.35 + 0.25 * Math.sin(t * 4 + c.s.id);
         c.cuerpo.rotation.y = Math.sin(t * 1.5 + c.s.id) * 0.15;
       } else {

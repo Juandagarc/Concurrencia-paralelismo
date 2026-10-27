@@ -68,6 +68,13 @@ demo_carrera.py    condición de carrera con y sin candado (Lock)
 tests/             pruebas automáticas (pytest)
 ```
 
+## Más realismo: menú, llegadas y máquinas de café
+
+- **Menú**: cada cliente pide algo distinto y cada producto tarda distinto. Las bebidas (espresso, americano, capuchino, latte, mocaccino) se preparan en la máquina: son carga de **CPU**. La comida (croissant, empanada, arepa, sándwich, brownie caliente) se espera en la cocina: es **E/S**. Cada preparación varía ±15 % al azar, con una semilla fija para que los tres modelos atiendan exactamente el mismo pedido. El promedio se mantiene: 10 pedidos suman 10 × la duración elegida.
+- **Llegada de clientes**: *escalonada* (de a uno, con separaciones al azar de 0,6 s en promedio) o *todos a la vez*. En el servidor cada solicitud entra de verdad a su hora; la **espera** se mide desde que el cliente llega hasta que lo atienden, y la **respuesta**, desde que llega hasta que recibe su pedido. La línea de tiempo marca cada llegada.
+- **Máquinas de café**: una máquina por **núcleo físico** y una boquilla por **núcleo lógico** (Hyper-Threading: dos hilos de hardware que comparten un núcleo, como dos boquillas que comparten la caldera). La topología se lee del sistema; en Linux es exacta y en Windows se asume la numeración habitual (los lógicos de un mismo núcleo son consecutivos).
+- **Meseros**: 4 por defecto y hasta 8, como en una cafetería real.
+
 ## Modo tiempo real (botón «Tiempo real»)
 
 Con el interruptor **Tiempo real** encendido, cada solicitud pasa en el servidor por **cuatro etapas reales**, y los meseros caminan sincronizados con ellas: cada tramo dura exactamente lo que dura la etapa.
@@ -93,7 +100,7 @@ El servidor se muestra como una cafetería. Cada elemento corresponde a una piez
 | Mesa con cliente | Solicitud de un usuario | Aro gris mientras espera; color del mesero que la atiende; taza y aro verde al responder |
 | Mesero | Hilo (en paralelo, un proceso) | Va adonde trabaja de verdad según los eventos; su color es el mismo de la línea de tiempo |
 | Tapete y pizarra | Proceso y su memoria | Concurrente: un tapete y una pizarra para todos los hilos. Paralelo: uno por proceso |
-| Cafetera | Núcleo de la CPU | Brillo y vapor = uso real de ese núcleo (psutil) |
+| Máquina de café / boquilla | Núcleo físico / núcleo lógico | Brillo y vapor = uso real de ese núcleo lógico (psutil) |
 | Cocina | E/S (base de datos, red, disco) | El mesero espera con un anillo azul sin ocupar ninguna cafetera |
 | Llave dorada | GIL | Solo el mesero que la tiene ejecuta código Python |
 

@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import motor
-from .solicitudes import ESCENARIOS, generar
+from .solicitudes import ESCENARIOS, LLEGADAS, generar
 from .trabajo import calibrar, nucleo_actual
 
 RAIZ = Path(__file__).resolve().parent.parent
@@ -75,6 +75,8 @@ class Laboratorio:
             "python": platform.python_version(),
             "gil": motor.gil_activo(),
             "nucleo_detectable": nucleo_actual() is not None,
+            "topologia": motor.topologia_cpu()[0],
+            "topologia_exacta": motor.topologia_cpu()[1],
             "uso_cpu_disponible": con_psutil,
             "ocupado": self.ocupado.locked(),
             "etapas": motor.ETAPAS,
@@ -88,30 +90,33 @@ class Laboratorio:
         trabajadores = max(1, min(int(params.get("trabajadores", 4)), 32))
         duracion = max(0.1, min(float(params.get("duracion", 1.0)), 5.0))
         realista = bool(params.get("realista", False))
+        llegadas = params.get("llegadas", "juntas")
+        if llegadas not in LLEGADAS:
+            raise ValueError("Tipo de llegada no válido")
         if not self.ocupado.acquire(blocking=False):
             raise RuntimeError("Ya hay una ejecución en curso")
         hilo = threading.Thread(
-            target=self._correr, args=(modo, escenario, trabajadores, duracion, realista),
+            target=self._correr, args=(modo, escenario, trabajadores, duracion, realista, llegadas),
             # En modo secuencial este hilo es el único que atiende solicitudes
             name="Hilo principal", daemon=True)
         hilo.start()
         return {"modo": modo, "escenario": escenario, "trabajadores": trabajadores,
-                "duracion": duracion, "realista": realista}
+                "duracion": duracion, "realista": realista, "llegadas": llegadas}
 
     def _correr(self, modo: str, escenario: str, trabajadores: int, duracion: float,
-                realista: bool) -> None:
+                realista: bool, llegadas: str) -> None:
         try:
-            lote = generar(escenario, duracion, self.ops_por_seg)
+            lote = generar(escenario, duracion, self.ops_por_seg, llegadas=llegadas)
 
             def al_evento(ev: dict) -> None:
                 if ev["tipo"] == "ejecucion_inicio":
-                    ev = ev | {"escenario": escenario, "duracion": duracion}
+                    ev = ev | {"escenario": escenario, "duracion": duracion, "llegadas": llegadas}
                 self.difundir(ev)
 
             r = motor.ejecutar(modo, lote, trabajadores, al_evento=al_evento,
                                muestrear_cpu=True, realista=realista)
             eventos = r.pop("eventos")
-            r |= {"escenario": escenario, "duracion": duracion,
+            r |= {"escenario": escenario, "duracion": duracion, "llegadas": llegadas,
                   "fecha": datetime.now().isoformat(timespec="seconds")}
             self.historial.append(r)
             self.difundir({"tipo": "resumen", **r})

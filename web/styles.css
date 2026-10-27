@@ -230,3 +230,5 @@ button:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
 #log .caja { color: #fca5a5; }
 #log .etapa { color: #a5b4fc; }
 .tabla .tr { font: 600 9.5px var(--mono); color: #04212a; background: var(--acento); border-radius: 4px; padding: 0 3px; }
+
+.segmentos.dos { grid-template-columns: repeat(2, 1fr); }

@@ -47,6 +47,15 @@
       <p class="pista" id="pista-escenario"></p>
     </section>
 
+    <section>
+      <h2>Llegada de clientes</h2>
+      <div class="segmentos dos" id="llegadas" role="radiogroup">
+        <button data-v="escalonadas" class="activo">Escalonada</button>
+        <button data-v="juntas">Todos a la vez</button>
+      </div>
+      <p class="pista" id="pista-llegadas"></p>
+    </section>
+
     <section class="tiempo-real">
       <label class="interruptor">
         <input type="checkbox" id="realista" checked>
@@ -58,12 +67,12 @@
 
     <section class="ajustes">
       <label>Trabajadores <output id="v-trab">4</output>
-        <input type="range" id="trabajadores" min="1" max="16" value="4">
+        <input type="range" id="trabajadores" min="1" max="8" value="4">
       </label>
       <label>Duración por solicitud <output id="v-dur">1.0 s</output>
         <input type="range" id="duracion" min="0.2" max="3" step="0.1" value="1">
       </label>
-      <p class="pista">Meseros: hilos en concurrente o procesos en paralelo (hasta 16). El secuencial siempre usa 1; si mueves este control estando en secuencial, se cambia a concurrente.</p>
+      <p class="pista">Meseros: hilos en concurrente o procesos en paralelo (hasta 8, como una cafetería real). El secuencial siempre usa 1; si mueves este control estando en secuencial, se cambia a concurrente.</p>
     </section>
 
     <section class="acciones">
@@ -77,7 +86,7 @@
         <li><i style="background:var(--espera)"></i><span><b>Mesa</b> = solicitud de un usuario (aro gris: esperando)</span></li>
         <li><i style="background:var(--io)"></i><span><b>Mesero</b> = hilo; su color es el mismo de la línea de tiempo</span></li>
         <li><i class="tapete"></i><span><b>Tapete y pizarra</b> = proceso y su memoria</span></li>
-        <li><i style="background:var(--cpu)"></i><span><b>Cafetera</b> = núcleo de CPU (brillo y vapor = uso real)</span></li>
+        <li><i style="background:var(--cpu)"></i><span><b>Máquina de café</b> = núcleo físico; cada <b>boquilla</b> = núcleo lógico (Hyper-Threading). Brillo y vapor = uso real</span></li>
         <li><i style="background:#c2410c"></i><span><b>Cocina</b> = E/S: esperar sin usar la CPU</span></li>
         <li><i style="background:#ef4444"></i><span><b>Caja con candado</b> = recurso compartido con <code>Lock</code>: uno a la vez (tiempo real)</span></li>
         <li><i class="llave"></i><span><b>Llave dorada</b> = GIL: solo quien la tiene ejecuta Python</span></li>
