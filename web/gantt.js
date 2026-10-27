@@ -13,7 +13,7 @@ export class Gantt {
   }
 
   reiniciar(solicitudes) {
-    this.filas = solicitudes.map((s) => ({ s, inicio: null, fin: null, carril: null, marcas: [] }));
+    this.filas = solicitudes.map((s) => ({ s, inicio: null, fin: null, carril: null, marcas: [], etapas: [] }));
     this.ahora = 0;
     this.escala = 1;
   }
@@ -22,6 +22,7 @@ export class Gantt {
 
   inicio(ev, carril) { const f = this._fila(ev.id); if (f) { f.inicio = ev.t; f.carril = carril; } }
   progreso(ev) { this._fila(ev.id)?.marcas.push(ev.t); }
+  etapa(ev) { this._fila(ev.id)?.etapas.push({ nombre: ev.etapa, t: ev.t }); }
   fin(ev) { const f = this._fila(ev.id); if (f) f.fin = ev.t; }
   tiempo(t) { this.ahora = Math.max(this.ahora, t); }
 
@@ -81,9 +82,21 @@ export class Gantt {
       if (f.inicio != null) {
         const color = PALETA[f.carril % PALETA.length];
         const hasta = f.fin ?? this.ahora;
-        ctx.fillStyle = color;
-        ctx.globalAlpha = f.fin != null ? 0.95 : 0.7;
-        ctx.fillRect(X(f.inicio), yc - bh / 2, Math.max(1.5, X(hasta) - X(f.inicio)), bh);
+        if (!f.etapas.length) {
+          ctx.fillStyle = color;
+          ctx.globalAlpha = f.fin != null ? 0.95 : 0.7;
+          ctx.fillRect(X(f.inicio), yc - bh / 2, Math.max(1.5, X(hasta) - X(f.inicio)), bh);
+        } else {
+          // Modo tiempo real: un tramo por etapa
+          f.etapas.forEach((e, k) => {
+            const t1 = f.etapas[k + 1]?.t ?? hasta;
+            if (e.nombre === 'caja_espera') { ctx.fillStyle = '#ef4444'; ctx.globalAlpha = 0.85; }
+            else if (e.nombre === 'caja_cobro') { ctx.fillStyle = '#facc15'; ctx.globalAlpha = 0.95; }
+            else if (e.nombre === 'preparar') { ctx.fillStyle = color; ctx.globalAlpha = 0.95; }
+            else { ctx.fillStyle = color; ctx.globalAlpha = 0.4; }   // pedido, camino a la caja, entrega
+            ctx.fillRect(X(e.t), yc - bh / 2, Math.max(1, X(t1) - X(e.t)), bh);
+          });
+        }
         ctx.globalAlpha = 1;
         ctx.strokeStyle = 'rgba(7,11,18,0.55)';
         for (const m of f.marcas) {

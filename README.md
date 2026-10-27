@@ -68,6 +68,22 @@ demo_carrera.py    condición de carrera con y sin candado (Lock)
 tests/             pruebas automáticas (pytest)
 ```
 
+## Modo tiempo real (botón «Tiempo real»)
+
+Con el interruptor **Tiempo real** encendido, cada solicitud pasa en el servidor por **cuatro etapas reales**, y los meseros caminan sincronizados con ellas: cada tramo dura exactamente lo que dura la etapa.
+
+| Etapa | En la cafetería | En el sistema | Duración |
+| --- | --- | --- | --- |
+| 1. Pedido | Ir a la mesa, tomar el pedido y llevarlo a su puesto | E/S: recibir la solicitud por la red | 1,8 s |
+| 2. Preparar | Cafetera (CPU) o cocina (E/S) | El trabajo de siempre | la duración elegida |
+| 3. Caja | Llevar la cuenta a la **única caja** y cobrar | Recurso compartido con `Lock`: **sección crítica**, uno a la vez | 0,8 s de camino + 0,5 s de cobro |
+| 4. Entrega | Llevar la taza a la mesa | E/S: enviar la respuesta | 1,6 s |
+
+- La caja usa `threading.Lock` en secuencial y concurrente, y un `Lock` compartido entre procesos (`Manager().Lock()`) en paralelo. Las pruebas verifican que nunca hay dos cobros a la vez.
+- **Lo que demuestra**: por más meseros que haya, los 10 cobros van en fila (al menos 5 s). Esa parte secuencial limita la aceleración: es la **ley de Amdahl**. En la línea de tiempo, rojo = esperando el `Lock` y dorado = cobrando.
+- Con el interruptor apagado se mide solo la preparación: es el modelo puro, el adecuado para comparar tiempos entre secuencial, concurrente y paralelo. La comparación y el historial separan ambos modos (marca **TR**).
+- Para el documento: `python medir.py --tiempo-real`.
+
 ## Cómo leer la visualización: la cafetería
 
 El servidor se muestra como una cafetería. Cada elemento corresponde a una pieza real del sistema:

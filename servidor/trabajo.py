@@ -61,12 +61,21 @@ def calibrar(muestra: int = 300_000, intentos: int = 3) -> int:
     return int(mejor)
 
 
-def atender(solicitud: dict, cola, t0: float) -> dict:
+def atender(solicitud: dict, cola, t0: float, caja=None, etapas: dict | None = None) -> dict:
     """Procesa una solicitud y emite sus eventos a `cola`.
 
     `cola` es una queue.Queue (secuencial / hilos) o una cola de Manager
     (procesos). `t0` es la hora (time.time) en que arrancó la ejecución, común
     a todos los procesos, para que los tiempos sean comparables.
+
+    Modo "tiempo real" (cuando se pasan `caja` y `etapas`): la solicitud pasa
+    por cuatro etapas reales, como un pedido en una cafetería:
+
+        1. pedido   (E/S)  recibir la solicitud por la red: el mesero la toma
+        2. preparar        el trabajo de siempre (CPU o E/S)
+        3. caja            registrar la venta en un recurso COMPARTIDO protegido
+                           con un Lock: solo un trabajador a la vez (sección crítica)
+        4. entrega  (E/S)  enviar la respuesta: el mesero lleva la taza
     """
     pid = os.getpid()
     tid = threading.get_native_id()
@@ -84,7 +93,13 @@ def atender(solicitud: dict, cola, t0: float) -> dict:
             **extra,
         })
 
-    emitir("inicio", trabajo=solicitud["trabajo"])
+    emitir("inicio", trabajo=solicitud["trabajo"], realista=etapas is not None)
+
+    if etapas is not None:
+        emitir("etapa", etapa="pedido", dur=etapas["pedido"])
+        time.sleep(etapas["pedido"])
+        emitir("etapa", etapa="preparar")
+
     for paso in range(1, PASOS + 1):
         if solicitud["trabajo"] == "io":
             # Simula esperar a una base de datos o a otro servicio:
@@ -94,5 +109,15 @@ def atender(solicitud: dict, cola, t0: float) -> dict:
             # Simula un cálculo pesado: la CPU trabaja todo el tiempo.
             quemar_cpu(solicitud["iteraciones"] // PASOS)
         emitir("progreso", progreso=paso / PASOS)
+
+    if etapas is not None:
+        emitir("etapa", etapa="caja_camino", dur=etapas["camino_caja"])
+        time.sleep(etapas["camino_caja"])
+        emitir("etapa", etapa="caja_espera")          # pide el Lock: puede quedar en fila
+        with caja:                                     # sección crítica: uno a la vez
+            emitir("etapa", etapa="caja_cobro", dur=etapas["cobro"])
+            time.sleep(etapas["cobro"])
+        emitir("etapa", etapa="entrega", dur=etapas["entrega"])
+        time.sleep(etapas["entrega"])
     emitir("fin")
     return {"id": solicitud["id"], "trabajador": trabajador, "pid": pid}

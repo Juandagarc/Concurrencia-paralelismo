@@ -204,3 +204,29 @@ button:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
   .gantt canvas { height: 260px; flex: none; }
   .registro { border-left: 0; border-top: 1px solid var(--linea); height: 240px; }
 }
+
+/* ------------------------------------------------------------ tiempo real */
+.tiempo-real { background: var(--panel-2); border: 1px solid var(--linea); border-radius: 12px; padding: 12px; }
+.interruptor { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 13px; }
+.interruptor input { position: absolute; opacity: 0; pointer-events: none; }
+.interruptor .riel {
+  width: 40px; height: 22px; border-radius: 999px; background: #334155; position: relative;
+  flex-shrink: 0; transition: background .2s;
+}
+.interruptor .riel::after {
+  content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+  background: #e2e8f0; transition: transform .2s;
+}
+.interruptor input:checked + .riel { background: var(--acento); }
+.interruptor input:checked + .riel::after { transform: translateX(18px); }
+.interruptor input:focus-visible + .riel { outline: 2px solid var(--acento); outline-offset: 2px; }
+.interruptor input:disabled + .riel { opacity: .5; }
+.interruptor b { display: block; color: var(--tinta); }
+.interruptor small { display: block; color: var(--tinta-suave); font-size: 11.5px; }
+.tiempo-real .pista code, .leyenda code { font: 11px var(--mono); color: #fca5a5; }
+.lbl-caja { color: var(--tinta); font-weight: 600; font-size: 12px; text-align: center; background: rgba(9,14,24,.8);
+  border: 1px solid rgba(239,68,68,.35); border-radius: 6px; padding: 2px 7px; }
+.lbl-caja small { display: block; font: 10.5px var(--mono); color: var(--tinta-suave); }
+#log .caja { color: #fca5a5; }
+#log .etapa { color: #a5b4fc; }
+.tabla .tr { font: 600 9.5px var(--mono); color: #04212a; background: var(--acento); border-radius: 4px; padding: 0 3px; }

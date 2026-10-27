@@ -77,6 +77,7 @@ class Laboratorio:
             "nucleo_detectable": nucleo_actual() is not None,
             "uso_cpu_disponible": con_psutil,
             "ocupado": self.ocupado.locked(),
+            "etapas": motor.ETAPAS,
         }
 
     def lanzar(self, params: dict) -> dict:
@@ -86,17 +87,19 @@ class Laboratorio:
             raise ValueError("Modo o escenario no válido")
         trabajadores = max(1, min(int(params.get("trabajadores", 4)), 32))
         duracion = max(0.1, min(float(params.get("duracion", 1.0)), 5.0))
+        realista = bool(params.get("realista", False))
         if not self.ocupado.acquire(blocking=False):
             raise RuntimeError("Ya hay una ejecución en curso")
         hilo = threading.Thread(
-            target=self._correr, args=(modo, escenario, trabajadores, duracion),
+            target=self._correr, args=(modo, escenario, trabajadores, duracion, realista),
             # En modo secuencial este hilo es el único que atiende solicitudes
             name="Hilo principal", daemon=True)
         hilo.start()
-        return {"modo": modo, "escenario": escenario,
-                "trabajadores": trabajadores, "duracion": duracion}
+        return {"modo": modo, "escenario": escenario, "trabajadores": trabajadores,
+                "duracion": duracion, "realista": realista}
 
-    def _correr(self, modo: str, escenario: str, trabajadores: int, duracion: float) -> None:
+    def _correr(self, modo: str, escenario: str, trabajadores: int, duracion: float,
+                realista: bool) -> None:
         try:
             lote = generar(escenario, duracion, self.ops_por_seg)
 
@@ -105,8 +108,8 @@ class Laboratorio:
                     ev = ev | {"escenario": escenario, "duracion": duracion}
                 self.difundir(ev)
 
-            r = motor.ejecutar(modo, lote, trabajadores,
-                               al_evento=al_evento, muestrear_cpu=True)
+            r = motor.ejecutar(modo, lote, trabajadores, al_evento=al_evento,
+                               muestrear_cpu=True, realista=realista)
             eventos = r.pop("eventos")
             r |= {"escenario": escenario, "duracion": duracion,
                   "fecha": datetime.now().isoformat(timespec="seconds")}
@@ -122,7 +125,8 @@ class Laboratorio:
     def _guardar(resumen: dict, eventos: list[dict]) -> None:
         EJECUCIONES.mkdir(parents=True, exist_ok=True)
         marca = datetime.now().strftime("%Y%m%d-%H%M%S")
-        nombre = f"{marca}_{resumen['modo']}_{resumen['escenario']}.json"
+        sufijo = "_tiempo-real" if resumen.get("realista") else ""
+        nombre = f"{marca}_{resumen['modo']}_{resumen['escenario']}{sufijo}.json"
         (EJECUCIONES / nombre).write_text(
             json.dumps({"resumen": resumen, "eventos": eventos},
                        ensure_ascii=False, indent=1),

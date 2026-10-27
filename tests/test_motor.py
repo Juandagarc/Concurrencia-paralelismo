@@ -46,3 +46,18 @@ def test_generar_alterna_en_mixto():
     lote = generar("mixto", 1.0, OPS)
     assert [s["trabajo"] for s in lote[:4]] == ["io", "cpu", "io", "cpu"]
     assert round(sum(s["duracion"] for s in lote), 3) == 10.0
+
+
+@pytest.mark.parametrize("modo", ["concurrente", "paralelo"])
+def test_tiempo_real_la_caja_atiende_uno_a_la_vez(modo):
+    """La caja es un Lock compartido: dos cobros nunca se solapan."""
+    rapidas = {"pedido": 0.05, "camino_caja": 0.02, "cobro": 0.05, "entrega": 0.05}
+    r = motor.ejecutar(modo, generar("io", 0.05, OPS), trabajadores=4, realista=True, etapas=rapidas)
+    ev = r["eventos"]
+    cobro = {e["id"]: e["t"] for e in ev if e.get("etapa") == "caja_cobro"}
+    salida = {e["id"]: e["t"] for e in ev if e.get("etapa") == "entrega"}
+    assert len(cobro) == 10
+    tramos = sorted((cobro[i], salida[i]) for i in cobro)
+    assert all(b[0] >= a[1] - 1e-3 for a, b in zip(tramos, tramos[1:]))
+    etapas = [e["etapa"] for e in ev if e["tipo"] == "etapa" and e["id"] == 1]
+    assert etapas == ["pedido", "preparar", "caja_camino", "caja_espera", "caja_cobro", "entrega"]

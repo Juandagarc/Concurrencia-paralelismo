@@ -28,6 +28,16 @@ except ImportError:  # pragma: no cover
 
 MODOS = ("secuencial", "concurrente", "paralelo")
 
+# Duración (s) de las etapas del modo "tiempo real" (cafetería completa).
+# La etapa "preparar" usa la duración propia de cada solicitud.
+# Están pensadas para que los meseros de la visualización caminen a un paso natural.
+ETAPAS = {
+    "pedido": 1.8,        # ir a la mesa, tomar el pedido y llevarlo (E/S: recibir la solicitud)
+    "camino_caja": 0.8,   # llevar la cuenta a la caja (E/S)
+    "cobro": 0.5,         # usar la caja: sección crítica protegida con un Lock
+    "entrega": 1.6,       # llevar la taza a la mesa (E/S: enviar la respuesta)
+}
+
 # "spawn" funciona igual en Windows, macOS y Linux, y evita copiar los hilos
 # del servidor web al crear procesos. Crear procesos así tiene un costo de
 # arranque real, que se mide y se muestra.
@@ -87,11 +97,15 @@ def resumir(modo: str, trabajadores: int, solicitudes: list[dict],
 
 def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
              al_evento: Callable[[dict], None] | None = None,
-             muestrear_cpu: bool = False) -> dict:
+             muestrear_cpu: bool = False, realista: bool = False,
+             etapas: dict | None = None) -> dict:
     """Atiende `solicitudes` con el modelo `modo` y devuelve el resumen.
 
     al_evento: se llama en el proceso principal con cada evento real, en orden
                de llegada (lo usa el servidor web para transmitirlos en vivo).
+    realista:  modo "tiempo real": cada solicitud pasa por pedido, preparar,
+               caja (un único Lock compartido) y entrega. Ver trabajo.atender.
+    etapas:    duraciones propias para el modo tiempo real (por defecto ETAPAS).
     """
     if modo not in MODOS:
         raise ValueError(f"Modo desconocido: {modo}")
@@ -109,6 +123,14 @@ def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
     else:
         cola = queue.Queue()
 
+    # La única caja de la cafetería: un recurso compartido que solo un
+    # trabajador puede usar a la vez. Entre procesos tiene que ser un Lock
+    # gestionado, porque los procesos no comparten memoria.
+    caja = None
+    etapas = dict(etapas or ETAPAS) if realista else None
+    if realista:
+        caja = gestor.Lock() if gestor else threading.Lock()
+
     def puente() -> None:
         while (ev := cola.get()) is not None:
             eventos.append(ev)
@@ -123,6 +145,7 @@ def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
         "tipo": "ejecucion_inicio", "t": 0.0, "modo": modo,
         "trabajadores": trabajadores, "pid_servidor": os.getpid(),
         "nucleos": os.cpu_count(), "solicitudes": solicitudes,
+        "realista": realista, "etapas": etapas,
     })
     for s in solicitudes:
         cola.put({"tipo": "llegada", "id": s["id"], "t": 0.0,
@@ -138,15 +161,15 @@ def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
     try:
         if modo == "secuencial":
             for s in solicitudes:
-                atender(s, cola, t0)
+                atender(s, cola, t0, caja, etapas)
         elif modo == "concurrente":
             with ThreadPoolExecutor(max_workers=trabajadores,
                                     thread_name_prefix="Hilo") as pool:
-                list(pool.map(lambda s: atender(s, cola, t0), solicitudes))
+                list(pool.map(lambda s: atender(s, cola, t0, caja, etapas), solicitudes))
         else:
             with ProcessPoolExecutor(max_workers=trabajadores,
                                      mp_context=_CONTEXTO) as pool:
-                futuros = [pool.submit(atender, s, cola, t0) for s in solicitudes]
+                futuros = [pool.submit(atender, s, cola, t0, caja, etapas) for s in solicitudes]
                 for f in futuros:
                     f.result()
         total = time.time() - t0
@@ -161,4 +184,5 @@ def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
     if gestor:
         gestor.shutdown()
 
-    return resumir(modo, trabajadores, solicitudes, eventos, total) | {"eventos": eventos}
+    return resumir(modo, trabajadores, solicitudes, eventos, total) | {
+        "realista": realista, "eventos": eventos}

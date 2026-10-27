@@ -5,6 +5,8 @@ import { Gantt } from './gantt.js';
 const $ = (s) => document.querySelector(s);
 const NOMBRE_MODO = { secuencial: 'Secuencial', concurrente: 'Concurrente', paralelo: 'Paralelo' };
 const NOMBRE_ESC = { io: 'E/S', cpu: 'CPU', mixto: 'Mixto' };
+const NOMBRE_ETAPA = { pedido: 'toma el pedido', preparar: 'prepara', caja_camino: 'va a la caja',
+  caja_espera: 'pide el Lock de la caja', caja_cobro: 'obtiene el Lock y cobra', entrega: 'suelta el Lock y entrega' };
 const ETQ_LOG = { ejecucion_inicio: 'ejecución', ejecucion_fin: 'total' };
 const COLOR_MODO = { secuencial: 'var(--sec)', concurrente: 'var(--con)', paralelo: 'var(--par)' };
 
@@ -20,7 +22,7 @@ const PISTA = {
 };
 
 const estado = {
-  modo: 'secuencial', escenario: 'io', trabajadores: 4, duracion: 1,
+  modo: 'secuencial', escenario: 'io', trabajadores: 4, duracion: 1, realista: true,
   info: null, ocupado: false, t0: 0, corriendo: false,
   carriles: new Map(), listas: 0, activas: new Set(), solicitudes: [],
   eventos: [], ultimaEjecucion: null, historial: [], esperando: null, nEventos: 0,
@@ -53,13 +55,17 @@ function refrescarTextos() {
   // mueve, la página pasa a concurrente (ver el manejador de 'input').
   $('#v-trab').textContent = estado.modo === 'secuencial' ? '1 (secuencial)' : estado.trabajadores;
   $('#v-dur').textContent = `${estado.duracion.toFixed(1)} s`;
+  $('#realista').checked = estado.realista;
+  $('#pista-realista').innerHTML = estado.realista
+    ? 'Cada solicitud pasa por <b>4 etapas reales</b> en el servidor: tomar el pedido (E/S), prepararlo (CPU o E/S), cobrar en la <b>única caja</b> (sección crítica con <code>Lock</code>) y entregarlo (E/S). Los meseros caminan sincronizados con esas etapas.'
+    : 'Solo se mide la preparación: el modelo puro, ideal para comparar tiempos. Caminar es animación y los meseros se apuran para alcanzar a los eventos.';
 }
 
 function previsualizar() {
   refrescarTextos();
   if (!estado.ocupado) {
     escena.reconfigurar({ modo: estado.modo, trabajadores: estado.trabajadores,
-      nucleos: estado.info?.nucleos ?? 4, gil: estado.info?.gil ?? true });
+      nucleos: estado.info?.nucleos ?? 4, gil: estado.info?.gil ?? true, realista: estado.realista });
   }
   pintarComparacion();
 }
@@ -74,6 +80,11 @@ $('#trabajadores').addEventListener('input', (e) => {
   }
   previsualizar();
 });
+$('#realista').addEventListener('change', (e) => {
+  estado.realista = e.target.checked;
+  try { localStorage.setItem('cafeteria-tiempo-real', estado.realista ? '1' : '0'); } catch { /* sin almacenamiento */ }
+  previsualizar();
+});
 $('#duracion').addEventListener('input', (e) => { estado.duracion = +e.target.value; refrescarTextos(); pintarComparacion(); });
 $('#ejecutar').addEventListener('click', () => ejecutar(estado.modo).catch(avisar));
 $('#comparar').addEventListener('click', compararTodos);
@@ -83,7 +94,7 @@ $('#exp-csv').addEventListener('click', () => exportar('csv'));
 
 function bloquear(si) {
   estado.ocupado = si;
-  ['#ejecutar', '#comparar', '#trabajadores', '#duracion'].forEach((s) => { $(s).disabled = si; });
+  ['#ejecutar', '#comparar', '#trabajadores', '#duracion', '#realista'].forEach((s) => { $(s).disabled = si; });
   document.querySelectorAll('.segmentos button').forEach((b) => { b.disabled = si; });
   if (!si) refrescarTextos();
 }
@@ -92,7 +103,7 @@ async function ejecutar(modo) {
   const r = await fetch('/api/ejecutar', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ modo, escenario: estado.escenario,
-      trabajadores: estado.trabajadores, duracion: estado.duracion }),
+      trabajadores: estado.trabajadores, duracion: estado.duracion, realista: estado.realista }),
   });
   const datos = await r.json();
   if (!r.ok) throw new Error(datos.error || 'No se pudo ejecutar');
@@ -132,18 +143,18 @@ function manejar(ev) {
     case 'ejecucion_inicio': {
       Object.assign(estado, { t0: performance.now(), corriendo: true, listas: 0,
         solicitudes: ev.solicitudes, eventos: [], carriles: new Map(), activas: new Set() });
-      estado.modo = ev.modo; estado.escenario = ev.escenario;
+      estado.modo = ev.modo; estado.escenario = ev.escenario; estado.realista = !!ev.realista;
       marcar('#modo', ev.modo); marcar('#escenario', ev.escenario);
       if (!estado.ocupado) bloquear(true);   // otra pestaña lanzó la ejecución
       escena.reconfigurar({ modo: ev.modo, trabajadores: ev.trabajadores, nucleos: ev.nucleos,
-        pid: ev.pid_servidor, gil: estado.info?.gil ?? true });
+        pid: ev.pid_servidor, gil: estado.info?.gil ?? true, realista: !!ev.realista });
       escena.crearSolicitudes(ev.solicitudes);
       gantt.reiniciar(ev.solicitudes);
       $('#log').innerHTML = '';
       estado.nEventos = 0;
       const quien = ev.modo === 'secuencial' ? '1 mesero'
         : `${ev.trabajadores} meseros (${ev.modo === 'paralelo' ? 'procesos' : 'hilos'})`;
-      $('#estado-escena').innerHTML = `Ejecutando · <b>${NOMBRE_MODO[ev.modo]}</b> · ${NOMBRE_ESC[ev.escenario]} · ${quien}`;
+      $('#estado-escena').innerHTML = `Ejecutando · <b>${NOMBRE_MODO[ev.modo]}</b> · ${NOMBRE_ESC[ev.escenario]} · ${quien}${ev.realista ? ' · tiempo real' : ''}`;
       ['#m-resp', '#m-arranque'].forEach((s) => { $(s).textContent = '—'; });
       $('#exp-json').disabled = $('#exp-csv').disabled = true;
       break;
@@ -157,6 +168,7 @@ function manejar(ev) {
       break;
     }
     case 'progreso': escena.progreso(ev); gantt.progreso(ev); break;
+    case 'etapa': escena.etapa(ev); gantt.etapa(ev); break;
     case 'fin':
       estado.activas.delete(ev.id);
       estado.listas++;
@@ -204,6 +216,10 @@ function registrar(ev) {
     const nucleo = ev.nucleo != null ? ` · núcleo ${ev.nucleo}` : '';
     const pct = ev.tipo === 'progreso' ? ` ${Math.round(ev.progreso * 100)}%` : '';
     detalle = `#${ev.id}${pct} · ${ev.trabajador} (pid ${ev.pid}, tid ${ev.tid})${nucleo}`;
+  } else if (ev.tipo === 'etapa') {
+    const dur = ev.dur ? ` · ${ev.dur.toFixed(2)} s` : '';
+    detalle = `#${ev.id} ${NOMBRE_ETAPA[ev.etapa] ?? ev.etapa}${dur} · ${ev.trabajador}`;
+    if (ev.etapa.startsWith('caja')) clase = 'caja';
   } else if (ev.tipo === 'llegada') {
     detalle = `#${ev.id} ${ev.usuario} · ${NOMBRE_ESC[ev.trabajo]}`;
     clase = 'sistema';
@@ -224,12 +240,14 @@ function registrar(ev) {
 }
 
 // ----------------------------------------------------- comparación e historial
-const clave = (r) => `${r.escenario}|${(+r.duracion).toFixed(1)}`;
+// Solo se comparan ejecuciones con la misma carga, duración y modo (tiempo real o no)
+const clave = (r) => `${r.escenario}|${(+r.duracion).toFixed(1)}|${r.realista ? 'TR' : 'puro'}`;
 
-function ultimoPor(escenario, duracion, modo) {
+function ultimoPor(escenario, duracion, modo, realista) {
+  const buscada = clave({ escenario, duracion, realista });
   for (let i = estado.historial.length - 1; i >= 0; i--) {
     const r = estado.historial[i];
-    if (r.modo === modo && clave(r) === `${escenario}|${duracion.toFixed(1)}`) return r;
+    if (r.modo === modo && clave(r) === buscada) return r;
   }
   return null;
 }
@@ -251,8 +269,9 @@ function ultimoPorAntesDe(r) {
 function pintarComparacion(ref) {
   const esc = ref?.escenario ?? estado.escenario;
   const dur = ref ? +ref.duracion : estado.duracion;
-  $('#comp-titulo').textContent = `${NOMBRE_ESC[esc]} · ${dur.toFixed(1)} s por solicitud`;
-  const filas = ['secuencial', 'concurrente', 'paralelo'].map((m) => [m, ultimoPor(esc, dur, m)]);
+  const tr = ref ? !!ref.realista : estado.realista;
+  $('#comp-titulo').textContent = `${NOMBRE_ESC[esc]} · ${dur.toFixed(1)} s por solicitud${tr ? ' · tiempo real' : ''}`;
+  const filas = ['secuencial', 'concurrente', 'paralelo'].map((m) => [m, ultimoPor(esc, dur, m, tr)]);
   const max = Math.max(0.001, ...filas.map(([, r]) => r?.total ?? 0));
   $('#barras').innerHTML = filas.map(([m, r]) => {
     const ancho = r ? Math.max(4, (r.total / max) * 100) : 0;
@@ -261,13 +280,17 @@ function pintarComparacion(ref) {
       <div class="pista-b"><div class="relleno" style="width:${ancho}%;background:${COLOR_MODO[m]}"></div>
       <span class="valor ${ancho < 30 ? 'fuera' : ''}" style="${ancho < 30 ? `left:calc(${ancho}% + 8px)` : ''}">${texto}</span></div></div>`;
   }).join('');
-  $('#conclusion').textContent = conclusion(esc, Object.fromEntries(filas));
+  $('#conclusion').textContent = conclusion(esc, Object.fromEntries(filas), tr);
 }
 
-function conclusion(esc, r) {
+function conclusion(esc, r, tr) {
   const { secuencial: s, concurrente: c, paralelo: p } = r;
   if (!s || (!c && !p)) return 'Ejecuta los tres modelos con la misma carga para compararlos.';
   const x = (a) => (a ? `${(s.total / a.total).toFixed(1)}×` : '—');
+  if (tr) {
+    const cobros = 10 * (estado.info?.etapas?.cobro ?? 0.3);
+    return `Tiempo real: hilos ${x(c)}, procesos ${x(p)}. Tomar pedidos y entregar se superpone entre meseros, pero la caja es una sola: los 10 cobros van en fila (≥ ${cobros.toFixed(1)} s) por más meseros que haya. Esa parte secuencial limita la aceleración (ley de Amdahl).`;
+  }
   if (esc === 'io') return `Con E/S los hilos aceleran ${x(c)} y los procesos ${x(p)}: mientras una solicitud espera, otra avanza. Los hilos lo logran sin el costo de crear procesos.`;
   if (esc === 'cpu') return `Con cálculo los hilos aceleran ${x(c)} (el GIL los turna) y los procesos ${x(p)}: solo el paralelismo real usa varios núcleos a la vez.`;
   return `Carga mixta: hilos ${x(c)}, procesos ${x(p)}. Los hilos aprovechan las esperas; los procesos, además, reparten el cálculo entre núcleos.`;
@@ -280,7 +303,7 @@ function pintarHistorial(nuevo = false) {
     const a = aceleracion(r);
     return `<tr class="${nuevo && i === 0 ? 'nuevo' : ''}">
       <td><span class="etq-modo"><i style="background:${COLOR_MODO[r.modo]}"></i>${NOMBRE_MODO[r.modo]}</span></td>
-      <td>${NOMBRE_ESC[r.escenario]} ${(+r.duracion).toFixed(1)}s</td><td>${r.trabajadores}</td>
+      <td>${NOMBRE_ESC[r.escenario]} ${(+r.duracion).toFixed(1)}s${r.realista ? ' <span class="tr" title="tiempo real">TR</span>' : ''}</td><td>${r.trabajadores}</td>
       <td>${r.total.toFixed(2)}</td><td>${a ? a.toFixed(1) : '—'}</td></tr>`;
   }).join('');
 }
@@ -289,14 +312,14 @@ function pintarHistorial(nuevo = false) {
 function exportar(formato) {
   const u = estado.ultimaEjecucion;
   if (!u) return;
-  const base = `${u.resumen.modo}_${u.resumen.escenario}_${u.resumen.fecha.replace(/[:T]/g, '-')}`;
+  const base = `${u.resumen.modo}_${u.resumen.escenario}${u.resumen.realista ? '_tiempo-real' : ''}_${u.resumen.fecha.replace(/[:T]/g, '-')}`;
   let contenido, tipo;
   if (formato === 'json') {
     contenido = JSON.stringify(u, null, 1);
     tipo = 'application/json';
   } else {
-    const cols = ['tipo', 'id', 't', 'trabajador', 'pid', 'tid', 'nucleo', 'progreso'];
-    const filas = u.eventos.filter((e) => ['llegada', 'inicio', 'progreso', 'fin'].includes(e.tipo))
+    const cols = ['tipo', 'id', 't', 'trabajador', 'pid', 'tid', 'nucleo', 'progreso', 'etapa', 'dur'];
+    const filas = u.eventos.filter((e) => ['llegada', 'inicio', 'progreso', 'etapa', 'fin'].includes(e.tipo))
       .map((e) => cols.map((c) => e[c] ?? '').join(','));
     contenido = [cols.join(','), ...filas].join('\n');
     tipo = 'text/csv';
@@ -329,6 +352,10 @@ function tic() {
 async function iniciar() {
   const info = await (await fetch('/api/info')).json();
   estado.info = info;
+  try {
+    const guardado = localStorage.getItem('cafeteria-tiempo-real');
+    if (guardado !== null) estado.realista = guardado === '1';
+  } catch { /* sin almacenamiento: queda el valor por defecto */ }
   const nucleos = info.nucleos ?? 4;
   estado.trabajadores = Math.min(Math.max(2, nucleos), 8);
   const slider = $('#trabajadores');

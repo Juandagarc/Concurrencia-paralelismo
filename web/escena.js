@@ -21,16 +21,20 @@ const ROPA = ['#64748b', '#7c3aed', '#be185d', '#0f766e', '#b45309',
   '#1d4ed8', '#4d7c0f', '#9f1239', '#0e7490', '#6d28d9'];
 
 // ---------------------------------------------------------------- plano
+const SEP = 3.6;              // separación entre columnas de mesas
 const MESAS = [];
-for (const z of [3.5, 7.1]) for (const x of [-8, -4, 0, 4, 8]) MESAS.push({ x, z });
-const Z_CASA = -0.6;          // donde esperan los meseros libres
-const Z_BARRA = -5.0;         // mostrador y cocina
-const Z_PUESTO = -3.85;       // donde se para un mesero a trabajar
-const BARRA = { x0: -12.5, x1: 1.5 };
-const COCINA = { x0: 3.0, x1: 12.5 };
-const ANCHO_PERSONAL = 21;
+for (const z of [3.5, 6.4]) for (let i = -2; i <= 2; i++) MESAS.push({ x: i * SEP, z });
+const Z_CASA = -0.2;          // donde esperan los meseros libres
+const Z_BARRA = -4.4;         // mostrador y cocina
+const Z_PUESTO = -3.25;       // donde se para un mesero a trabajar
+const BARRA = { x0: -12.5, x1: 0.6 };
+const COCINA = { x0: 3.9, x1: 12.5 };
+const ANCHO_PERSONAL = 17;
+const CAJA = { x: 2.25, z: Z_BARRA };                // la única caja, entre la barra y la cocina
+const PUNTO_COBRO = new THREE.Vector3(CAJA.x, 0, Z_PUESTO);
+const Z_FILA = Z_PUESTO + 1.0;                        // la fila se forma frente a la barra
 const Z_PASILLO = 1.9;        // pasillo entre el personal y el comedor
-const VELOCIDAD = 9;          // unidades por segundo al caminar sin prisa
+const VELOCIDAD = 7;          // unidades por segundo al caminar sin prisa
 const PRISA_MAX = 10;         // si se atrasa frente a los eventos reales, camina hasta 10× más rápido
 const PRISA_POR_SEGUNDO = 2;  // cuánto acelera por cada segundo de atraso
 const SOBRE_CABEZA = new THREE.Vector3(0, 2.3, 0);
@@ -82,8 +86,9 @@ const M = {
 Object.values(M).forEach((m) => { m.userData.compartido = true; });
 
 // --------------------------------------------------------------- ayudas
-// Pasillos verticales entre columnas de mesas (las mesas están en x = -8, -4, 0, 4, 8)
-const corredor = (x) => THREE.MathUtils.clamp(Math.round((x - 2) / 4) * 4 + 2, -10, 10);
+// Pasillos verticales entre columnas de mesas (a media distancia entre dos mesas)
+const corredor = (x) => THREE.MathUtils.clamp(
+  Math.round((x - SEP / 2) / SEP) * SEP + SEP / 2, -2.5 * SEP, 2.5 * SEP);
 
 function etiqueta(html, clase, cx = 0.5, cy = 1) {
   const div = document.createElement('div');
@@ -332,8 +337,8 @@ export class Escena {
     suelo.rotation.x = -Math.PI / 2;
     suelo.position.y = -0.02;
     s.add(suelo);
-    piso(28, 7.6, 0, 5.4, texturaMadera());     // comedor
-    piso(28, 8.2, 0, -2.5, texturaBaldosa());   // personal, barra y cocina
+    piso(28, 6.6, 0, 4.9, texturaMadera());     // comedor
+    piso(28, 7.6, 0, -2.2, texturaBaldosa());   // personal, caja, barra y cocina
 
     for (const m of MESAS) {
       const mesa = crearMesa();
@@ -377,7 +382,60 @@ export class Escena {
     };
     zona('Barra', 'cada cafetera es un núcleo de la CPU', bx, 3.25, Z_BARRA - 0.8);
     zona('Cocina · E/S', 'esperar aquí no ocupa ninguna cafetera', kx, 3.25, Z_BARRA - 0.1);
-    zona('Comedor', '10 mesas = 10 solicitudes', -10.3, 0, 2.3, 0.5, 0.5);
+    this._construirCaja();
+  }
+
+  /** La caja: un solo recurso compartido. Su candado es el Lock de Python. */
+  _construirCaja() {
+    const g = new THREE.Group();
+    const mueble = new THREE.Mesh(new THREE.BoxGeometry(1.7, 1.0, 0.9), mat('#4a3326'));
+    mueble.position.y = 0.5;
+    const tapa = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.06, 1.0), mat('#d9cbb5', { roughness: 0.35 }));
+    tapa.position.y = 1.03;
+    const registradora = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.32, 0.45), M.metalOscuro);
+    registradora.position.set(0, 1.22, 0.05);
+    const pantalla = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 0.16),
+      new THREE.MeshStandardMaterial({ color: '#052e16', emissive: '#22c55e', emissiveIntensity: 0.8 }));
+    pantalla.position.set(0, 1.28, 0.281);
+    // Candado = el Lock: verde libre, rojo ocupado
+    const matCandado = new THREE.MeshStandardMaterial({ color: '#64748b', emissive: '#64748b',
+      emissiveIntensity: 0.4, metalness: 0.5, roughness: 0.35 });
+    const candado = new THREE.Group();
+    const cuerpo = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.3, 0.14), matCandado);
+    const arco = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.035, 8, 20, Math.PI), matCandado);
+    arco.position.y = 0.15;
+    candado.add(cuerpo, arco);
+    candado.position.y = 1.95;
+    g.add(mueble, tapa, registradora, pantalla, candado);
+    g.position.set(CAJA.x, 0, CAJA.z);
+    const lbl = etiqueta('', 'lbl lbl-caja', 0.5, 1);
+    lbl.position.set(CAJA.x, 2.5, CAJA.z);
+    this.scene.add(g, lbl);
+    this.caja = { matCandado, candado, lbl };
+    this.colaCaja = [];
+    this.cajaDueno = null;
+    this._lblCaja();
+  }
+
+  _lblCaja() {
+    if (!this.caja) return;
+    const { matCandado, lbl } = this.caja;
+    let sub, color;
+    if (!this.realista) {
+      sub = 'se usa en modo tiempo real';
+      color = '#64748b';
+    } else if (this.cajaDueno) {
+      sub = `Lock ocupado por ${this.cajaDueno.nombre}`;
+      color = '#ef4444';
+    } else {
+      sub = 'Lock libre';
+      color = '#22c55e';
+    }
+    const n = this.colaCaja.length;
+    if (this.realista && n) sub += ` · ${n} en fila`;
+    matCandado.color.set(color);
+    matCandado.emissive.set(color);
+    lbl.element.innerHTML = `Caja · sección crítica<small>${sub}</small>`;
   }
 
   _vaciar(grupo) {
@@ -390,16 +448,20 @@ export class Escena {
 
   // -------------------------------------------------------- reconfigurar
   /** Arma el personal según el modelo: cuántos meseros, procesos y llaves. */
-  reconfigurar({ modo, trabajadores, nucleos, pid, gil = true }) {
+  reconfigurar({ modo, trabajadores, nucleos, pid, gil = true, realista = false }) {
     this._vaciar(this.personal);
     this.meseros = [];
     this.llaves = [];
     this.modo = modo;
+    this.realista = realista;
+    this.colaCaja = [];
+    this.cajaDueno = null;
+    this._lblCaja();
     const n = modo === 'secuencial' ? 1 : Math.max(1, trabajadores);
     this.compacto = n > 8;
     const esp = Math.min(2.2, ANCHO_PERSONAL / n);
     const xs = Array.from({ length: n }, (_, i) => (i - (n - 1) / 2) * esp);
-    const zMat = Z_CASA - 0.45, prof = 2.7;
+    const zMat = Z_CASA - 0.3, prof = 2.2;
 
     const tapete = (x, ancho, color) => {
       const geo = new THREE.PlaneGeometry(ancho, prof);
@@ -516,6 +578,9 @@ export class Escena {
     this.vuelos = [];
     this.clientes.clear();
     this.tLlegada = performance.now();
+    this.colaCaja = [];
+    this.cajaDueno = null;
+    this._lblCaja();
     solicitudes.forEach((s, i) => {
       const mesa = MESAS[i % MESAS.length];
       const p = crearCliente(ROPA[i % ROPA.length], PIELES[i % PIELES.length]);
@@ -590,7 +655,7 @@ export class Escena {
 
   /** Punto junto a la mesa donde se para el mesero, mirando al cliente. */
   _junto(c) {
-    const pos = new THREE.Vector3(c.mesa.x + 1.2, 0, c.mesa.z - 0.35);
+    const pos = new THREE.Vector3(c.mesa.x + 1.15, 0, c.mesa.z - 0.35);
     const rot = Math.atan2(c.mesa.x - pos.x, c.mesa.z - 0.95 - pos.z);
     return { pos, rot };
   }
@@ -598,7 +663,11 @@ export class Escena {
   _lblMesero(m) {
     const pct = Math.round(m.progreso * 100);
     let sub = m.entregando != null ? `llevando #${m.entregando}` : 'libre';
-    if (m.solicitud != null) {
+    const ETAPA = { pedido: 'tomando el pedido', caja_camino: 'va a la caja',
+      caja_espera: 'en fila de la caja', caja_cobro: 'cobrando', entrega: 'entregando' };
+    if (m.solicitud != null && ETAPA[m.etapa]) {
+      sub = this.compacto ? `#${m.solicitud}` : `#${m.solicitud} · ${ETAPA[m.etapa]}`;
+    } else if (m.solicitud != null) {
       if (this.compacto) sub = `#${m.solicitud}`;
       else if (m.tipo === 'io') sub = `#${m.solicitud} · esperando cocina · ${pct}%`;
       else sub = `#${m.solicitud} · ${pct}%${m.nucleo != null ? ` · núcleo ${m.nucleo}` : ''}`;
@@ -621,7 +690,7 @@ export class Escena {
     const c = this.clientes.get(ev.id);
     if (!m || !c) return;
     Object.assign(m, { nombre: ev.trabajador, solicitud: ev.id, tipo: ev.trabajo,
-      nucleo: ev.nucleo, progreso: 0, regresarEn: null });
+      nucleo: ev.nucleo, progreso: 0, regresarEn: null, etapa: null });
     if (ev.trabajo === 'cpu') this._tomarLlave(m); else this._soltarLlave(m);
     this._lblMesero(m);
 
@@ -629,6 +698,9 @@ export class Escena {
     c.aro.material.color.set(m.color);
     c.aro.material.opacity = 0.75;
     c.estadoEl.textContent = `lo atiende ${ev.trabajador}`;
+
+    // En tiempo real los pasos llegan como eventos de etapa (ver etapa()).
+    if (ev.realista) return;
 
     // 1) camina a la mesa y toma el pedido  2) lo lleva a la cafetera o a la cocina
     const junto = this._junto(c);
@@ -638,6 +710,105 @@ export class Escena {
     this._irA(m, this._puesto(m), { rot: Math.PI, puesto: ev.id, alLlegar: () => {
       m.ticket.visible = false;
     } });
+  }
+
+  // ------------------------------------------------- modo tiempo real
+  /** Agrega una ruta cuyo recorrido dura exactamente `dur` segundos: el mesero
+   *  ajusta su paso para llegar justo cuando termina la etapa real. */
+  _cronometrar(m, pasos, dur) {
+    const inicio = m.ruta.length;
+    for (const p of pasos) {
+      this._irA(m, p.destino, { rot: p.rot, pausaFrac: p.pausa || 0, alLlegar: p.alLlegar, ...p.extra },
+        p.alIniciar || null);
+    }
+    const nuevos = m.ruta.slice(inicio);
+    let previo = inicio > 0 ? m.ruta[inicio - 1].pos : m.g.position;
+    let largo = 0;
+    for (const w of nuevos) {
+      largo += Math.hypot(w.pos.x - previo.x, w.pos.z - previo.z);
+      previo = w.pos;
+    }
+    const fracPausa = pasos.reduce((a, p) => a + (p.pausa || 0), 0);
+    const vel = Math.max(0.6, largo / Math.max(0.05, dur * (1 - fracPausa)));
+    const limite = performance.now() / 1000 + dur;
+    for (const w of nuevos) {
+      w.vel = vel;
+      w.t = limite;                      // hora en que la etapa real termina
+      if (w.pausaFrac) w.pausa = w.pausaFrac * dur;
+    }
+  }
+
+  _puntoFila(k) { return new THREE.Vector3(CAJA.x - 1.0 * (k + 1), 0, Z_FILA); }
+
+  /** Acomoda a los meseros que esperan el Lock en la fila de la caja. */
+  _reordenarFila() {
+    this.colaCaja.forEach((m, k) => {
+      const lugar = this._puntoFila(k);
+      const pendiente = [...m.ruta].reverse().find((w) => w.fila);
+      if (pendiente) pendiente.pos.copy(lugar);
+      else if (!m.ruta.length && m.g.position.distanceTo(lugar) > 0.05) {
+        m.ruta.push({ pos: lugar, rot: Math.PI / 2, meta: true, fila: true, vel: 4, t: performance.now() / 1000 + 0.3 });
+      }
+    });
+  }
+
+  etapa(ev) {
+    const m = this.meseros.find((x) => x.solicitud === ev.id);
+    const c = this.clientes.get(ev.id);
+    if (!m || !c) return;
+    m.etapa = ev.etapa;
+    if (ev.etapa !== 'preparar') this._soltarLlave(m);   // dormir o esperar libera el GIL
+    switch (ev.etapa) {
+      case 'pedido': {
+        const junto = this._junto(c);
+        this._cronometrar(m, [
+          { destino: junto.pos, rot: junto.rot, pausa: 0.2, alLlegar: () => { m.ticket.visible = true; } },
+          { destino: this._puesto(m), rot: Math.PI, extra: { puesto: ev.id },
+            alLlegar: () => { m.ticket.visible = false; } },
+        ], ev.dur);
+        c.estadoEl.textContent = `${m.nombre} toma el pedido`;
+        break;
+      }
+      case 'preparar':
+        c.estadoEl.textContent = m.tipo === 'io' ? 'en la cocina' : 'en la cafetera';
+        if (m.tipo === 'cpu') this._tomarLlave(m);
+        break;
+      case 'caja_camino':
+        this._cronometrar(m, [{ destino: this._puntoFila(this.colaCaja.length), rot: Math.PI / 2,
+          extra: { fila: true }, alIniciar: () => { m.tazaBandeja.visible = true; } }], ev.dur);
+        c.estadoEl.textContent = 'va a la caja';
+        break;
+      case 'caja_espera':
+        if (!this.colaCaja.includes(m)) this.colaCaja.push(m);
+        this._reordenarFila();
+        c.estadoEl.textContent = 'esperando la caja';
+        break;
+      case 'caja_cobro':
+        this.colaCaja = this.colaCaja.filter((x) => x !== m);
+        this.cajaDueno = m;
+        this._cronometrar(m, [{ destino: PUNTO_COBRO, rot: Math.PI, pausa: 0.6 }], ev.dur);
+        this._reordenarFila();
+        c.estadoEl.textContent = 'cobrando en caja';
+        break;
+      case 'entrega': {
+        if (this.cajaDueno === m) this.cajaDueno = null;
+        m.entregando = ev.id;
+        const junto = this._junto(c);
+        this._cronometrar(m, [{ destino: junto.pos, rot: junto.rot, pausa: 0.2, alLlegar: () => {
+          m.tazaBandeja.visible = false;
+          const desde = m.g.localToWorld(new THREE.Vector3(0.36, 1.29, 0.52));
+          this._vuelo(crearTaza(), desde, c.taza.position.clone(), 0.25, 0.2,
+            (o) => { this.efectos.remove(o); c.taza.visible = true; c.salto = 1; });
+          if (m.entregando === ev.id) m.entregando = null;
+          this._lblMesero(m);
+        } }], ev.dur);
+        c.estadoEl.textContent = `${m.nombre} trae la taza`;
+        break;
+      }
+      default:
+    }
+    this._lblCaja();
+    this._lblMesero(m);
   }
 
   progreso(ev) {
@@ -671,6 +842,11 @@ export class Escena {
     }
     if (!m) return;
     this._soltarLlave(m);
+    if (this.realista) {
+      Object.assign(m, { solicitud: null, tipo: null, progreso: 0, etapa: null });
+      this._lblMesero(m);
+      return;
+    }
     Object.assign(m, { solicitud: null, tipo: null, progreso: 0, entregando: ev.id });
     this._lblMesero(m);
     if (!c) return;
@@ -705,8 +881,8 @@ export class Escena {
     this.camera.aspect = w / h;
     const vfov = THREE.MathUtils.degToRad(this.camera.fov);
     const hfov = 2 * Math.atan(Math.tan(vfov / 2) * this.camera.aspect);
-    const dist = Math.max(12.6 / Math.tan(hfov / 2), 7.2 / Math.tan(vfov / 2));
-    const objetivo = new THREE.Vector3(0, 0.8, 1.6);
+    const dist = Math.max(12.4 / Math.tan(hfov / 2), 6.6 / Math.tan(vfov / 2));
+    const objetivo = new THREE.Vector3(-0.4, 0.8, 1.3);
     const dir = new THREE.Vector3(0, 0.8, 0.6).normalize();
     this.camera.position.copy(objetivo).addScaledVector(dir, dist);
     this.controles.target.copy(objetivo);
@@ -717,7 +893,7 @@ export class Escena {
 
   // ----------------------------------------------------------- animación
   _cuadro() {
-    const dt = Math.min(this.reloj.getDelta(), 0.1);
+    const dt = Math.min(this.reloj.getDelta(), 0.25);   // tolera equipos lentos sin atrasarse
     const t = this.reloj.elapsedTime;
     const k = 1 - Math.exp(-dt * 10);
 
@@ -752,37 +928,42 @@ export class Escena {
       const meta = m.ruta.find((w) => w.meta);
       const atraso = meta && !meta.casa ? performance.now() / 1000 - meta.t : 0;
       const prisa = THREE.MathUtils.clamp(1 + PRISA_POR_SEGUNDO * atraso, 1, PRISA_MAX);
-      // Distancia que puede recorrer en este cuadro; se reparte entre varios
-      // puntos de la ruta para no perder un cuadro en cada esquina.
-      let presupuesto = VELOCIDAD * prisa * dt;
+      // Tiempo disponible en este cuadro; se reparte entre varios puntos de la
+      // ruta (cada tramo con su velocidad) para no perder un cuadro por esquina.
+      let tiempo = dt * prisa;
       let caminando = false;
+      let ritmo = 1;
       for (let vueltas = 0; vueltas < 12 && m.ruta.length; vueltas++) {
         const paso0 = m.ruta[0];
         if (!paso0.iniciado) { paso0.iniciado = true; paso0.alIniciar?.(); }
+        const vel = paso0.vel ?? VELOCIDAD;
         const dx = paso0.pos.x - p.x, dz = paso0.pos.z - p.z;
         const dist = Math.hypot(dx, dz);
         if (dist > 1e-3) {
-          if (presupuesto <= 0) break;
-          const avance = Math.min(dist, presupuesto);
+          if (tiempo <= 0) break;
+          const avance = Math.min(dist, vel * tiempo);
           p.x += (dx / dist) * avance;
           p.z += (dz / dist) * avance;
-          presupuesto -= avance;
+          tiempo -= avance / vel;
           m.g.rotation.y = girar(m.g.rotation.y, Math.atan2(dx, dz), 1 - Math.exp(-dt * 14));
           caminando = true;
+          ritmo = (vel * prisa) / VELOCIDAD;
           if (avance < dist) break;
         }
-        // Llegó a este punto: espera su pausa (tomar el pedido, entregar) y sigue
+        // Llegó a este punto: espera su pausa (tomar el pedido, cobrar, entregar) y sigue
         if (paso0.rot != null) m.rotFinal = paso0.rot;
         if ((paso0.pausa ?? 0) > 0) {
-          paso0.pausa -= dt * prisa;
-          caminando = false;
-          break;
+          const usa = Math.min(paso0.pausa, tiempo);
+          paso0.pausa -= usa;
+          tiempo -= usa;
+          if (paso0.pausa > 1e-4) { caminando = false; break; }
         }
         m.ruta.shift();
         paso0.alLlegar?.();
       }
-      if (caminando) m.fase += dt * 14 * Math.min(prisa, 2.5);
-      const enPuesto = !m.ruta.length && m.solicitud != null;
+      if (caminando) m.fase += dt * 14 * THREE.MathUtils.clamp(ritmo, 0.5, 2.5);
+      // En su puesto preparando (en tiempo real, solo durante la etapa "preparar")
+      const enPuesto = !m.ruta.length && m.solicitud != null && (m.etapa == null || m.etapa === 'preparar');
       if (caminando) {
         const s = Math.sin(m.fase);
         m.piernas[0].rotation.x = s * 0.6;
@@ -806,6 +987,11 @@ export class Escena {
         m.anillo.rotation.z += dt * 3;
         m.anillo.scale.setScalar(1 + 0.1 * Math.sin(t * 4));
       }
+    }
+
+    if (this.caja) {
+      this.caja.candado.rotation.y += dt * (this.cajaDueno ? 2.5 : 0.6);
+      this.caja.candado.position.y = 1.95 + (this.cajaDueno ? Math.sin(t * 6) * 0.05 : 0);
     }
 
     for (const l of this.llaves) {

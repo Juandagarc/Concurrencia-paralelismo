@@ -47,6 +47,15 @@
       <p class="pista" id="pista-escenario"></p>
     </section>
 
+    <section class="tiempo-real">
+      <label class="interruptor">
+        <input type="checkbox" id="realista" checked>
+        <span class="riel" aria-hidden="true"></span>
+        <span><b>Tiempo real</b><small>pedido, caja y entrega</small></span>
+      </label>
+      <p class="pista" id="pista-realista"></p>
+    </section>
+
     <section class="ajustes">
       <label>Trabajadores <output id="v-trab">4</output>
         <input type="range" id="trabajadores" min="1" max="16" value="4">
@@ -70,6 +79,7 @@
         <li><i class="tapete"></i><span><b>Tapete y pizarra</b> = proceso y su memoria</span></li>
         <li><i style="background:var(--cpu)"></i><span><b>Cafetera</b> = núcleo de CPU (brillo y vapor = uso real)</span></li>
         <li><i style="background:#c2410c"></i><span><b>Cocina</b> = E/S: esperar sin usar la CPU</span></li>
+        <li><i style="background:#ef4444"></i><span><b>Caja con candado</b> = recurso compartido con <code>Lock</code>: uno a la vez (tiempo real)</span></li>
         <li><i class="llave"></i><span><b>Llave dorada</b> = GIL: solo quien la tiene ejecuta Python</span></li>
         <li><i style="background:var(--listo)"></i><span><b>Taza en la mesa</b> = respuesta entregada</span></li>
       </ul>
@@ -117,7 +127,7 @@
 
   <footer class="inferior">
     <section class="gantt">
-      <h2>Línea de tiempo real <small>gris = en cola · color = trabajador · marcas = eventos de progreso</small></h2>
+      <h2>Línea de tiempo real <small>gris = en cola · color = trabajador (claro = pedido, entrega y camino a la caja) · rojo = en fila de la caja · dorado = cobrando con el Lock</small></h2>
       <canvas id="gantt"></canvas>
     </section>
     <section class="registro">

@@ -10,6 +10,7 @@ Ejecuta los 3 modelos × los escenarios elegidos, repite cada prueba y guarda:
 Uso:
     python medir.py
     python medir.py --repeticiones 5 --duracion 1 --trabajadores 4
+    python medir.py --tiempo-real      (incluye pedido, caja con Lock y entrega)
 """
 
 from __future__ import annotations
@@ -41,6 +42,8 @@ def main() -> None:
                    help="hilos / procesos del pool (default: núcleos del equipo)")
     p.add_argument("--escenarios", nargs="+", default=["io", "cpu"],
                    choices=ESCENARIOS)
+    p.add_argument("--tiempo-real", action="store_true",
+                   help="cafetería completa: pedido, preparar, caja con Lock y entrega")
     a = p.parse_args()
 
     SALIDA.mkdir(exist_ok=True)
@@ -57,6 +60,7 @@ def main() -> None:
         "duracion_por_solicitud": a.duracion,
         "trabajadores": a.trabajadores,
         "repeticiones": a.repeticiones,
+        "tiempo_real": a.tiempo_real,
     }
     (SALIDA / "equipo.json").write_text(json.dumps(equipo, indent=2, ensure_ascii=False),
                                        encoding="utf-8")
@@ -70,7 +74,7 @@ def main() -> None:
         for modo in motor.MODOS:
             tiempos, respuestas = [], []
             for rep in range(1, a.repeticiones + 1):
-                r = motor.ejecutar(modo, lote, a.trabajadores)
+                r = motor.ejecutar(modo, lote, a.trabajadores, realista=a.tiempo_real)
                 tiempos.append(r["total"])
                 respuestas.append(r["respuesta_promedio"])
                 filas.append({"escenario": esc, "modo": modo, "repeticion": rep,
