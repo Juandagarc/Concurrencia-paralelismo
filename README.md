@@ -116,6 +116,7 @@ El servidor se muestra como una cafetería. Cada elemento corresponde a una piez
 ```bash
 python medir.py --repeticiones 5 --duracion 1    # tablas en resultados/
 python graficas.py                               # resultados/graficas/*.png
+python barrido.py                                # aceleración con 1, 2, 4 y 8 trabajadores
 python demo_carrera.py                           # condición de carrera
 ```
 
@@ -123,6 +124,8 @@ python demo_carrera.py                           # condición de carrera
 - `resultados/equipo.json`: núcleos, sistema y versión de Python del equipo de prueba (los resultados dependen de esto).
 - `resultados/ejecuciones/`: cada ejecución hecha desde la web se guarda con todos sus eventos.
 - La web permite descargar los eventos de la última ejecución en **JSON** o **CSV**.
+
+La carpeta [`evidencia/`](evidencia/) guarda corridas completas ya medidas (CSV, JSON de eventos y gráficas), con el equipo en que se midieron.
 
 ## Métricas
 

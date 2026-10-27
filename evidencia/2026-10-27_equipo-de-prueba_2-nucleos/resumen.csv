@@ -1,0 +1,10 @@
+escenario,modo,trabajadores,total_promedio_s,desviacion_s,respuesta_promedio_s,aceleracion
+io,secuencial,1,5.0396,0.0023,2.6944,1.0
+io,concurrente,4,1.4359,0.0006,0.8363,3.51
+io,paralelo,4,1.6453,0.006,0.9836,3.06
+cpu,secuencial,1,5.5332,0.3759,2.9898,1.0
+cpu,concurrente,4,5.8697,0.0506,3.6861,0.94
+cpu,paralelo,4,3.3487,0.2162,2.0385,1.65
+mixto,secuencial,1,5.6473,0.1811,2.9859,1.0
+mixto,concurrente,4,3.1078,0.0758,1.7589,1.82
+mixto,paralelo,4,2.1292,0.1031,1.1112,2.65

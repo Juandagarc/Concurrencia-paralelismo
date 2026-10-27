@@ -1,0 +1,14 @@
+{
+  "fecha": "2026-10-27T16:58:15",
+  "sistema": "Linux 6.18.44-fc-v180",
+  "procesador": "x86_64",
+  "nucleos_logicos": 2,
+  "python": "3.13.17",
+  "gil_activo": true,
+  "iteraciones_por_segundo": 20917653,
+  "duracion_por_solicitud": 0.5,
+  "trabajadores": 4,
+  "repeticiones": 3,
+  "tiempo_real": false,
+  "llegadas": "juntas"
+}

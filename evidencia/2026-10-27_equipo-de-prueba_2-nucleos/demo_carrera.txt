@@ -1,0 +1,6 @@
+10 hilos × 100 depósitos de $1  →  saldo esperado $1,000
+
+Sin candado         saldo $  106  ·  se perdieron 894 depósitos  ·  13 ms
+Con candado (Lock)  saldo $1,000  ·  correcto  ·  79 ms
+
+El candado garantiza el resultado correcto a cambio de que los hilos esperen su turno en la sección crítica.
