@@ -13,6 +13,7 @@
   --sec: #94a3b8;
   --con: #38bdf8;
   --par: #fb923c;
+  --dis: #a78bfa;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   color-scheme: dark;
 }
@@ -232,3 +233,25 @@ button:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
 .tabla .tr { font: 600 9.5px var(--mono); color: #04212a; background: var(--acento); border-radius: 4px; padding: 0 3px; }
 
 .segmentos.dos { grid-template-columns: repeat(2, 1fr); }
+.segmentos.cuatro { grid-template-columns: repeat(2, 1fr); }
+
+/* --------------------------------------------------- modo distribuido */
+.red .deslizador { display: block; font-size: 13px; margin-bottom: 12px; }
+.red .deslizador output { float: right; font: 600 12px var(--mono); color: var(--dis); }
+.red .deslizador input { width: 100%; }
+.red .interruptor input:checked + .riel { background: var(--dis); }
+.red .pista b { color: var(--tinta); }
+.leyenda .paquete { background: #c4b5fd; border-radius: 50%; box-shadow: 0 0 6px #a78bfa; }
+.lbl-coord { font: 600 12px var(--mono); color: #ddd6fe; text-align: center; background: rgba(9,14,24,.82);
+  border: 1px solid rgba(167,139,250,.45); border-radius: 6px; padding: 2px 7px; }
+.lbl-coord small { display: block; font: 400 10.5px system-ui, sans-serif; color: var(--tinta-suave); }
+.lbl-nodo { font: 10px var(--mono); color: #c4b5fd; text-align: center; background: rgba(9,14,24,.7);
+  border-radius: 5px; padding: 1px 5px; }
+.lbl-nodo.caido { color: #fca5a5; border: 1px solid rgba(239,68,68,.6); }
+.lbl-mesero.caido b { color: #f87171 !important; text-decoration: line-through; }
+#log .red { color: #c4b5fd; }
+#log .falla { color: #f87171; }
+.chip.enlace { color: var(--dis); text-decoration: none; border-color: rgba(167,139,250,.45); }
+.chip.enlace:hover { background: rgba(167,139,250,.12); }
+.chip.enlace b { color: var(--tinta); }
+.red .pista a { color: var(--dis); }

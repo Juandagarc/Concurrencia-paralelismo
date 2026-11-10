@@ -1,6 +1,6 @@
 # Laboratorio de concurrencia, paralelismo e hilos
 
-**Grupo 1 · Sistemas Distribuidos** — Un servidor real en Python atiende 10 solicitudes de usuarios de tres formas (**secuencial**, **concurrente** con hilos y **paralela** con procesos). Una visualización 3D en Three.js lo muestra en tiempo real como una **cafetería**: los meseros son hilos, las mesas son solicitudes, las cafeteras son núcleos de la CPU y la cocina es la E/S.
+**Grupo 1 · Sistemas Distribuidos** — Un servidor real en Python atiende 10 solicitudes de usuarios de cuatro formas: **secuencial**, **concurrente** con hilos, **paralela** con procesos y **distribuida**, con un coordinador que reparte el trabajo entre nodos independientes que solo se comunican por la red. Una visualización 3D en Three.js lo muestra en tiempo real como una **cafetería**: los meseros son hilos, las mesas son solicitudes, las cafeteras son núcleos de la CPU y la cocina es la E/S.
 
 Nada está animado "de mentira": cada movimiento en pantalla corresponde a un evento real emitido por el código que se está ejecutando.
 
@@ -19,15 +19,15 @@ En Windows puede ser `py -m servidor`. Para proyectarlo desde otro equipo de la 
 
 Si el puerto 8000 está ocupado o reservado por Windows (`WinError 10013` o `10048`), el servidor prueba solo el 8001, 8002… y muestra en la consola la dirección que quedó activa. También puedes elegirlo: `python -m servidor --puerto 5050`.
 
-En la página: elige el **modelo**, el **tipo de solicitudes** y pulsa **Ejecutar**, o **Comparar los 3 modelos** para correrlos seguidos con la misma carga.
+En la página: elige el **modelo**, el **tipo de solicitudes** y pulsa **Ejecutar**, o **Comparar los 4 modelos** para correrlos seguidos con la misma carga.
 
 ## Qué demuestra
 
-| Escenario | Secuencial | Concurrente (hilos) | Paralelo (procesos) |
-| --- | --- | --- | --- |
-| **E/S** (esperar una base de datos) | Línea base | Mucho más rápido: mientras un hilo espera, otro avanza | Más rápido, pero paga el costo de crear procesos |
-| **CPU** (cálculo pesado) | Línea base | **Casi igual** que secuencial: el GIL de Python turna los hilos | Más rápido, hasta el número de núcleos |
-| **Mixto** | Línea base | Aprovecha las esperas | Aprovecha esperas y núcleos |
+| Escenario | Secuencial | Concurrente (hilos) | Paralelo (procesos) | Distribuido (nodos) |
+| --- | --- | --- | --- | --- |
+| **E/S** (esperar una base de datos) | Línea base | Mucho más rápido: mientras un hilo espera, otro avanza | Más rápido, pero paga el costo de crear procesos | Más rápido; cada mensaje paga la latencia de la red |
+| **CPU** (cálculo pesado) | Línea base | **Casi igual** que secuencial: el GIL de Python turna los hilos | Más rápido, hasta el número de núcleos | Como paralelo, y puede crecer sumando computadores |
+| **Mixto** | Línea base | Aprovecha las esperas | Aprovecha esperas y núcleos | Aprovecha esperas, núcleos y otros equipos |
 
 La conclusión técnica central: **concurrencia no es lo mismo que paralelismo**. Los hilos resuelven bien la espera (E/S); para acelerar cálculo hace falta ejecutar de verdad al mismo tiempo en varios núcleos.
 
@@ -39,13 +39,14 @@ flowchart LR
     M -->|secuencial| S["Hilo principal<br/>una tras otra"]
     M -->|concurrente| H["ThreadPoolExecutor<br/>N hilos · 1 proceso"]
     M -->|paralelo| P["ProcessPoolExecutor<br/>N procesos · N núcleos"]
-    S & H & P -->|"trabajo.atender()<br/>misma función"| C[("Cola de eventos<br/>queue / Manager IPC")]
+    M -->|distribuido| D["Coordinador ⇄ TCP ⇄ N nodos<br/>otros programas u otros equipos"]
+    S & H & P & D -->|"trabajo.atender()<br/>misma función"| C[("Cola de eventos<br/>queue / Manager IPC / TCP")]
     C --> W["web.py<br/>Server-Sent Events"]
     W --> V["Navegador<br/>Three.js + Gantt"]
     C --> R["resultados/<br/>JSON · CSV · PNG"]
 ```
 
-- Las tres versiones usan **la misma función de trabajo** y **las mismas solicitudes**; solo cambia cómo se ejecutan. Por eso la comparación es justa.
+- Las cuatro versiones usan **la misma función de trabajo** y **las mismas solicitudes**; solo cambia cómo se ejecutan. Por eso la comparación es justa.
 - Cada solicitud se procesa en 10 pasos y emite eventos `inicio`, `progreso` y `fin` con la hora real, el PID, el identificador del hilo y el núcleo de CPU.
 - En modo paralelo los procesos no comparten memoria, así que los eventos viajan por una cola gestionada (comunicación entre procesos, IPC).
 - El servidor web usa solo la biblioteca estándar y transmite los eventos con *Server-Sent Events*.
@@ -56,12 +57,17 @@ flowchart LR
 servidor/
   trabajo.py       qué hace el servidor con cada solicitud (esperar o calcular) y cómo emite eventos
   solicitudes.py   genera las 10 solicitudes (usuarios, tipo de trabajo, duración)
-  motor.py         los tres modelos de ejecución y el cálculo de métricas
+  motor.py         los cuatro modelos de ejecución y el cálculo de métricas
+  distribuido.py   el coordinador: balanceo de carga, Lock distribuido, reloj, latidos y reasignación
+  nodo.py          un nodo del servidor: programa aparte que se conecta al coordinador por TCP
+  ws.py            WebSocket mínimo (biblioteca estándar) para los nodos del navegador
   web.py           servidor HTTP + transmisión de eventos en vivo
 web/
   escena.js        escena 3D de la cafetería: mesas, meseros, cafeteras, cocina y llave del GIL
   gantt.js         línea de tiempo en vivo
   app.js           controles, métricas, comparación, historial y exportación
+  nodo.html/.js    página para prestar tu equipo como nodo
+  nodo-trabajador.js  un nodo del navegador (Web Worker): Cristian, latidos, trabajo y candado
 medir.py           mediciones definitivas para el documento (repite y promedia)
 graficas.py        gráficas PNG para el documento y la presentación
 demo_carrera.py    condición de carrera con y sin candado (Lock)
@@ -90,6 +96,76 @@ Con el interruptor **Tiempo real** encendido, cada solicitud pasa en el servidor
 - **Lo que demuestra**: por más meseros que haya, los 10 cobros van en fila (al menos 5 s). Esa parte secuencial limita la aceleración: es la **ley de Amdahl**. En la línea de tiempo, rojo = esperando el `Lock` y dorado = cobrando.
 - Con el interruptor apagado se mide solo la preparación: es el modelo puro, el adecuado para comparar tiempos entre secuencial, concurrente y paralelo. La comparación y el historial separan ambos modos (marca **TR**).
 - Para el documento: `python medir.py --tiempo-real`.
+
+## Modo distribuido: la arquitectura de un sistema distribuido
+
+En los modelos anteriores todo pasa dentro de un solo programa. En el modo **Distribuido** el trabajo se reparte entre **nodos** que no comparten memoria con nadie y solo se comunican por la red. El servidor es el protagonista: hospeda la web y el **coordinador**, y cualquier persona puede prestar su equipo como nodo **desde el navegador, sin instalar nada**.
+
+En línea: **https://cafeteria.juandagarc.com** (la cafetería) y **https://cafeteria.juandagarc.com/nodo.html** (sumar tu equipo).
+
+```mermaid
+flowchart LR
+    subgraph Publico["Público"]
+      V["Espectadores<br/>la cafetería 3D"]
+      P["Participantes<br/>/nodo.html · 1 Web Worker por núcleo"]
+    end
+    subgraph Servidor["Tu servidor · Coolify · contenedor Docker"]
+      W["Servidor web<br/>web.py"]
+      subgraph Coord["Coordinador · distribuido.py"]
+        direction TB
+        B["Balanceador de carga"]
+        L["Lock distribuido (caja)"]
+        R["Reloj de referencia (Cristian)"]
+        F["Detector de fallos (latidos)"]
+      end
+      N["Nodos del servidor<br/>nodo.py · procesos aparte"]
+    end
+    V -- "HTTPS · SSE" --> W
+    P -- "WSS · JSON validado" --> Coord
+    W --- Coord
+    Coord <-- "TCP local · clave" --> N
+```
+
+| Concepto de sistemas distribuidos | Dónde está en el código | Qué se ve |
+| --- | --- | --- |
+| **Cliente–servidor** | `web.py`: POST `/api/ejecutar`, eventos por SSE | La página es un cliente más |
+| **Coordinador / maestro–trabajadores** | `distribuido.Coordinador`, `nodo.py`, `web/nodo-trabajador.js` | El rack violeta y los meseros-nodo |
+| **Paso de mensajes (sin memoria compartida)** | Nodos del servidor: `multiprocessing.managers` por TCP local. Navegadores: WebSocket con JSON (`ws.py`) | Paquetes que viajan del rack a cada nodo y de vuelta |
+| **Heterogeneidad y transparencia** | Dos transportes, un mismo protocolo: el coordinador trata igual a un proceso y a un navegador (`Coordinador._enviar`) | Nodos del servidor y del público en la misma escena |
+| **Balanceo de carga** | `Coordinador._repartir`: nodo libre que menos ha atendido; si hay muchos equipos, entran primero los que menos trabajaron | Evento `mensaje` en el registro |
+| **Latencia de red** | Real en los navegadores; simulada en los nodos del servidor (control *Latencia de red*) | Más espera por solicitud |
+| **Exclusión mutua distribuida (centralizada)** | `CandadoDistribuido`: el coordinador presta el candado en orden FIFO | Caja · Lock distribuido |
+| **Sin reloj global: sincronización** | Cristian en `nodo.sincronizar` y en el Worker. Los nodos del servidor arrancan con el reloj desfasado a propósito (+180 ms, −120 ms…) | Rótulo del nodo: `reloj +180 ms ✓` |
+| **Detección de fallos** | Latido cada 0,25 s; 1 s sin latido = nodo caído (`_vigilar`) | El mesero cae y se vuelve gris |
+| **Tolerancia a fallos** | La solicitud del nodo caído se reasigna, se le revoca el candado y sus mensajes tardíos se descartan (`_reenviar`) | `REASIGNADA` en el registro |
+| **Seguridad en un sistema abierto** | Los navegadores no pueden ejecutar nada en el servidor: solo JSON, tipos permitidos, campos acotados, nombres saneados, máximo 64 navegadores y 12 nodos por ejecución | — |
+| **Escalabilidad** | Cada equipo que se suma aporta núcleos sin cambiar el código | Más meseros en la escena |
+
+**Prestar tu equipo:** abre `/nodo.html`, escribe tu nombre, elige cuántos núcleos prestas y pulsa **Unirme**. Cada trabajador es un Web Worker con su propia conexión, su propio reloj corregido y sus propios latidos. Tus meseros aparecen en la siguiente ejecución del modo *Distribuido*. El trabajo es de CPU (el mismo cálculo que en Python), así que lo que se presta son núcleos de CPU, no la GPU.
+
+**Probar la tolerancia a fallos**, de dos formas:
+
+- En la cafetería: activa **Simular caída de un nodo**. Un nodo del servidor se apaga sin avisar a mitad de una solicitud.
+- Desde un equipo participante: en `/nodo.html` pulsa **Apagar sin avisar** mientras un trabajador atiende. El Worker se detiene de golpe, como si se desenchufara el equipo.
+
+En ambos casos el coordinador lo nota cuando le faltan los latidos, le da la solicitud a otro nodo, y las 10 solicitudes se atienden una sola vez.
+
+**Nodos de Python en la red local** (opcional, para quien quiera un nodo nativo):
+
+```bash
+python -m servidor --host 0.0.0.0 --nodos-lan      # imprime la dirección y la clave
+python -m servidor.nodo --coordinador 192.168.1.10:50500 --clave <clave>
+```
+
+Este canal usa `pickle` autenticado con la clave, así que solo debe usarse en una red de confianza. Por eso en el servidor público queda cerrado: el puerto 50500 solo escucha dentro del contenedor.
+
+## Despliegue (Coolify)
+
+El `Dockerfile` levanta la web, el coordinador y los nodos del servidor en un solo contenedor, en el puerto 8000. En Coolify: aplicación desde el repositorio de GitHub, *build pack* Dockerfile, puerto 8000 y dominio `https://cafeteria.juandagarc.com`. Los WebSocket (`/ws/nodo`) y el SSE (`/api/eventos`) pasan por el mismo dominio.
+
+```bash
+docker build -t cafeteria . && docker run -p 8000:8000 cafeteria    # prueba local
+```
 
 ## Cómo leer la visualización: la cafetería
 
@@ -142,7 +218,7 @@ La carpeta [`evidencia/`](evidencia/) guarda corridas completas ya medidas (CSV,
 - **GIL**: en CPython solo un hilo ejecuta código Python a la vez. `time.sleep` y la E/S lo liberan; un cálculo en Python no. La cabecera de la página indica si el GIL está activo. Con la compilación experimental sin GIL (`python3.13t`) los hilos sí acelerarían el cálculo: es un buen experimento adicional.
 - **Procesos con `spawn`**: se usa el mismo método de arranque en Windows, macOS y Linux. Crear procesos cuesta tiempo real, y se mide.
 - **Calibración**: al iniciar, el programa mide cuántas iteraciones de cálculo hace el equipo por segundo, para que una solicitud de CPU de 1 s dure aproximadamente 1 s en cualquier computador.
-- **Simulación en un nodo**: todo corre en un solo computador. Muestra concurrencia y paralelismo dentro de un nodo; los mismos principios se aplican entre varios nodos de un sistema distribuido.
+- **Nodos del servidor y del público**: los nodos del servidor corren como programas aparte (otros procesos, sin memoria compartida, hablando por TCP local), así que la demo funciona aunque nadie se sume. Su latencia y el desfase de sus relojes son simulados y fijos para que las pruebas sean repetibles. En los nodos del navegador son reales.
 - Three.js (r170, licencia MIT) va incluido en `web/vendor/`, así que la demo funciona sin internet en clase.
 
 ## Pruebas

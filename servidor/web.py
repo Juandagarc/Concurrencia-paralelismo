@@ -3,6 +3,7 @@
 - Sirve la visualización 3D de la carpeta web/.
 - POST /api/ejecutar lanza una ejecución real del simulador.
 - GET  /api/eventos transmite cada evento en vivo (Server-Sent Events).
+- GET  /ws/nodo es el WebSocket por el que un navegador se suma como nodo.
 - Cada ejecución se guarda en resultados/ejecuciones/ como evidencia.
 """
 
@@ -20,13 +21,14 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import motor
+from . import distribuido, motor, ws
 from .solicitudes import ESCENARIOS, LLEGADAS, generar
 from .trabajo import calibrar, nucleo_actual
 
 RAIZ = Path(__file__).resolve().parent.parent
 WEB = RAIZ / "web"
 EJECUCIONES = RAIZ / "resultados" / "ejecuciones"
+MAX_GUARDADAS = 300        # en un servidor público no se llena el disco
 
 mimetypes.add_type("text/javascript", ".js")
 
@@ -80,6 +82,7 @@ class Laboratorio:
             "uso_cpu_disponible": con_psutil,
             "ocupado": self.ocupado.locked(),
             "etapas": motor.ETAPAS,
+            "coordinador": distribuido.obtener().info(),
         }
 
     def lanzar(self, params: dict) -> dict:
@@ -87,24 +90,28 @@ class Laboratorio:
         escenario = params.get("escenario", "io")
         if modo not in motor.MODOS or escenario not in ESCENARIOS:
             raise ValueError("Modo o escenario no válido")
-        trabajadores = max(1, min(int(params.get("trabajadores", 4)), 32))
+        trabajadores = max(1, min(int(params.get("trabajadores", 4)), 8))
         duracion = max(0.1, min(float(params.get("duracion", 1.0)), 5.0))
         realista = bool(params.get("realista", False))
+        latencia = max(0.0, min(float(params.get("latencia", 30)), 300.0)) / 1000
+        caida = bool(params.get("caida", False))
         llegadas = params.get("llegadas", "juntas")
         if llegadas not in LLEGADAS:
             raise ValueError("Tipo de llegada no válido")
         if not self.ocupado.acquire(blocking=False):
             raise RuntimeError("Ya hay una ejecución en curso")
         hilo = threading.Thread(
-            target=self._correr, args=(modo, escenario, trabajadores, duracion, realista, llegadas),
+            target=self._correr,
+            args=(modo, escenario, trabajadores, duracion, realista, llegadas, latencia, caida),
             # En modo secuencial este hilo es el único que atiende solicitudes
             name="Hilo principal", daemon=True)
         hilo.start()
         return {"modo": modo, "escenario": escenario, "trabajadores": trabajadores,
-                "duracion": duracion, "realista": realista, "llegadas": llegadas}
+                "duracion": duracion, "realista": realista, "llegadas": llegadas,
+                "latencia": latencia, "caida": caida}
 
     def _correr(self, modo: str, escenario: str, trabajadores: int, duracion: float,
-                realista: bool, llegadas: str) -> None:
+                realista: bool, llegadas: str, latencia: float, caida: bool) -> None:
         try:
             lote = generar(escenario, duracion, self.ops_por_seg, llegadas=llegadas)
 
@@ -114,7 +121,8 @@ class Laboratorio:
                 self.difundir(ev)
 
             r = motor.ejecutar(modo, lote, trabajadores, al_evento=al_evento,
-                               muestrear_cpu=True, realista=realista)
+                               muestrear_cpu=True, realista=realista,
+                               latencia=latencia, caida=caida)
             eventos = r.pop("eventos")
             r |= {"escenario": escenario, "duracion": duracion, "llegadas": llegadas,
                   "fecha": datetime.now().isoformat(timespec="seconds")}
@@ -136,6 +144,8 @@ class Laboratorio:
             json.dumps({"resumen": resumen, "eventos": eventos},
                        ensure_ascii=False, indent=1),
             encoding="utf-8")
+        for viejo in sorted(EJECUCIONES.glob("*.json"))[:-MAX_GUARDADAS]:
+            viejo.unlink(missing_ok=True)
 
 
 def crear_manejador(lab: Laboratorio):
@@ -161,6 +171,11 @@ def crear_manejador(lab: Laboratorio):
                 return self._json(lab.historial)
             if ruta == "/api/eventos":
                 return self._sse()
+            if ruta == "/ws/nodo":
+                canal = ws.aceptar(self)
+                if canal is None:
+                    return self._json({"error": "Se esperaba un WebSocket"}, HTTPStatus.BAD_REQUEST)
+                return distribuido.obtener().atender_navegador(canal)
             return self._estatico(ruta)
 
         def do_POST(self):
@@ -230,15 +245,25 @@ def _abrir(host: str, puerto: int, manejador, intentos: int = 20):
                      "Prueba con:  python -m servidor --puerto 5050")
 
 
-def iniciar(host: str = "127.0.0.1", puerto: int = 8000) -> None:
+def iniciar(host: str = "127.0.0.1", puerto: int = 8000, nodos_lan: bool = False) -> None:
     print("Calibrando la CPU de este equipo…", flush=True)
+    # El puerto TCP del coordinador (pickle con clave) solo escucha en este equipo,
+    # salvo que se pida --nodos-lan para sumar nodos de Python de la red local.
+    # Los navegadores entran siempre por el WebSocket de la web, que es seguro.
+    coordinador = distribuido.obtener("0.0.0.0" if nodos_lan else "127.0.0.1")
     lab = Laboratorio()
+    coordinador.al_cambio = lambda info: lab.difundir({"tipo": "red", **info})
     servidor, puerto = _abrir(host, puerto, crear_manejador(lab))
     servidor.daemon_threads = True
     info = lab.info()
     print(f"  {info['nucleos']} núcleos · Python {info['python']} · "
           f"GIL {'activo' if info['gil'] else 'desactivado'} · "
           f"{lab.ops_por_seg:,} iteraciones/s")
+    print(f"  Nodos del navegador: abre http://{host}:{puerto}/nodo.html en cualquier equipo")
+    if nodos_lan:
+        print("  Nodos de Python en la red local:\n"
+              f"    python -m servidor.nodo --coordinador {coordinador.direccion_red()} "
+              f"--clave {coordinador.clave}")
     print(f"\nLaboratorio listo en  http://{host}:{puerto}\n(Ctrl+C para salir)")
     try:
         servidor.serve_forever()

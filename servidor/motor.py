@@ -3,8 +3,11 @@
     secuencial  -> el hilo principal atiende una solicitud tras otra.
     concurrente -> un pool de hilos dentro del mismo proceso (ThreadPoolExecutor).
     paralelo    -> un pool de procesos, uno por núcleo (ProcessPoolExecutor).
+    distribuido -> un coordinador reparte las solicitudes entre nodos (programas
+                   aparte, en este u otros computadores) que solo se comunican
+                   por la red (TCP). Ver distribuido.py y nodo.py.
 
-Las tres versiones usan exactamente la misma función de trabajo
+Las cuatro versiones usan exactamente la misma función de trabajo
 (`trabajo.atender`) y las mismas solicitudes; solo cambia cómo se ejecutan.
 """
 
@@ -19,6 +22,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from typing import Callable
 
+from . import distribuido
 from .trabajo import atender
 
 try:  # psutil es opcional: permite mostrar el uso real de cada núcleo
@@ -26,7 +30,7 @@ try:  # psutil es opcional: permite mostrar el uso real de cada núcleo
 except ImportError:  # pragma: no cover
     psutil = None
 
-MODOS = ("secuencial", "concurrente", "paralelo")
+MODOS = ("secuencial", "concurrente", "paralelo", "distribuido")
 
 # Duración (s) de las etapas del modo "tiempo real" (cafetería completa).
 # La etapa "preparar" usa la duración propia de cada solicitud.
@@ -121,6 +125,7 @@ def resumir(modo: str, trabajadores: int, solicitudes: list[dict],
         "respuesta_max": round(max(r["respuesta"] for r in filas), 4),
         "trabajadores_usados": len({r["trabajador"] for r in filas}),
         "procesos_usados": len({r["pid"] for r in filas}),
+        "nodos_usados": len({e["nodo"] for e in eventos if e["tipo"] == "fin" and e.get("nodo")}),
         "nucleos_usados": sorted(nucleos),
         "solicitudes": filas,
     }
@@ -129,7 +134,8 @@ def resumir(modo: str, trabajadores: int, solicitudes: list[dict],
 def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
              al_evento: Callable[[dict], None] | None = None,
              muestrear_cpu: bool = False, realista: bool = False,
-             etapas: dict | None = None) -> dict:
+             etapas: dict | None = None, latencia: float = 0.03,
+             caida: bool = False) -> dict:
     """Atiende `solicitudes` con el modelo `modo` y devuelve el resumen.
 
     al_evento: se llama en el proceso principal con cada evento real, en orden
@@ -137,6 +143,9 @@ def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
     realista:  modo "tiempo real": cada solicitud pasa por pedido, preparar,
                caja (un único Lock compartido) y entrega. Ver trabajo.atender.
     etapas:    duraciones propias para el modo tiempo real (por defecto ETAPAS).
+    latencia:  (distribuido) segundos que tarda un mensaje en llegar a un nodo.
+    caida:     (distribuido) apaga un nodo a mitad de una solicitud para mostrar
+               cómo el coordinador detecta la falla y reasigna el trabajo.
     """
     if modo not in MODOS:
         raise ValueError(f"Modo desconocido: {modo}")
@@ -145,6 +154,14 @@ def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
 
     eventos: list[dict] = []
     gestor = None
+    coordinador = remotos = None
+    locales = trabajadores
+    if modo == "distribuido":
+        # Los nodos de otros computadores que ya están conectados se suman a
+        # los nodos locales que se lanzan para esta ejecución.
+        coordinador = distribuido.obtener()
+        remotos = coordinador.remotos(distribuido.MAX_NODOS - locales)
+        trabajadores = locales + len(remotos)
     if modo == "paralelo":
         # Los procesos no comparten memoria: los eventos viajan por una cola
         # gestionada (IPC). Se crea antes de medir porque es parte del
@@ -159,7 +176,7 @@ def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
     # gestionado, porque los procesos no comparten memoria.
     caja = None
     etapas = dict(etapas or ETAPAS) if realista else None
-    if realista:
+    if realista and not coordinador:   # en distribuido la caja vive en el coordinador
         caja = gestor.Lock() if gestor else threading.Lock()
 
     def puente() -> None:
@@ -177,6 +194,8 @@ def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
         "trabajadores": trabajadores, "pid_servidor": os.getpid(),
         "nucleos": os.cpu_count(), "solicitudes": solicitudes,
         "realista": realista, "etapas": etapas,
+        **({"coordinador": coordinador.direccion_red(), "remotos": [n.nombre for n in remotos],
+            "latencia": latencia} if coordinador else {}),
     })
 
     def recibir(s: dict) -> None:
@@ -208,6 +227,9 @@ def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
             for _ in orden:
                 atender(fila.get(), cola, t0, caja, etapas)
             recepcion.join()
+        elif modo == "distribuido":
+            coordinador.ejecutar(orden, recibir, t0, cola.put, locales, etapas=etapas,
+                                 latencia=latencia, caida=caida, remotos=remotos)
         else:
             Pool = ThreadPoolExecutor if modo == "concurrente" else ProcessPoolExecutor
             opciones = ({"thread_name_prefix": "Hilo"} if modo == "concurrente"

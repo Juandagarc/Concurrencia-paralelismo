@@ -1,6 +1,6 @@
 """Mediciones definitivas para el documento y la presentación.
 
-Ejecuta los 3 modelos × los escenarios elegidos, repite cada prueba y guarda:
+Ejecuta los 4 modelos (secuencial, concurrente, paralelo y distribuido) × los escenarios elegidos, repite cada prueba y guarda:
 
     resultados/mediciones.csv   una fila por repetición
     resultados/resumen.csv      promedios y aceleración (speedup)

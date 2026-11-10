@@ -19,8 +19,9 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 RES = Path(__file__).resolve().parent / "resultados"
 OUT = RES / "graficas"
-MODOS = ["secuencial", "concurrente", "paralelo"]
-COLOR_MODO = {"secuencial": "#64748b", "concurrente": "#0ea5e9", "paralelo": "#f97316"}
+MODOS = ["secuencial", "concurrente", "paralelo", "distribuido"]
+COLOR_MODO = {"secuencial": "#64748b", "concurrente": "#0ea5e9", "paralelo": "#f97316",
+              "distribuido": "#8b5cf6"}
 NOMBRES = {"io": "E/S (espera)", "cpu": "CPU (cálculo)", "mixto": "Mixto"}
 PALETA = ["#0ea5e9", "#f97316", "#22c55e", "#a855f7", "#eab308",
           "#ec4899", "#14b8a6", "#ef4444", "#6366f1", "#84cc16"]
@@ -30,14 +31,15 @@ def barras() -> None:
     with open(RES / "resumen.csv", encoding="utf-8") as f:
         filas = list(csv.DictReader(f))
     escenarios = list(dict.fromkeys(r["escenario"] for r in filas))
+    modos = [m for m in MODOS if any(r["modo"] == m for r in filas)]   # los que se midieron
     fig, ax = plt.subplots(figsize=(8, 4.5), dpi=150)
-    ancho = 0.26
-    for i, modo in enumerate(MODOS):
+    ancho = 0.8 / len(modos)
+    for i, modo in enumerate(modos):
         vals = [next(float(r["total_promedio_s"]) for r in filas
                      if r["escenario"] == e and r["modo"] == modo) for e in escenarios]
         acel = [next(float(r["aceleracion"]) for r in filas
                      if r["escenario"] == e and r["modo"] == modo) for e in escenarios]
-        xs = [j + (i - 1) * ancho for j in range(len(escenarios))]
+        xs = [j + (i - (len(modos) - 1) / 2) * ancho for j in range(len(escenarios))]
         barras_ = ax.bar(xs, vals, ancho, label=modo.capitalize(), color=COLOR_MODO[modo])
         for b, v, s in zip(barras_, vals, acel):
             ax.text(b.get_x() + b.get_width() / 2, v, f"{v:.2f} s\n{s:.1f}×",
@@ -54,12 +56,15 @@ def barras() -> None:
 
 
 def gantt(escenario: str) -> None:
-    fig, ejes = plt.subplots(3, 1, figsize=(9, 7.5), dpi=150, sharex=True)
+    modos = [m for m in MODOS if (RES / f"eventos_{escenario}_{m}.json").exists()]
+    if not modos:
+        return
+    fig, ejes = plt.subplots(len(modos), 1, figsize=(9, 2.5 * len(modos)), dpi=150,
+                             sharex=True, squeeze=False)
+    ejes = ejes[:, 0]
     tmax = 0.0
-    for ax, modo in zip(ejes, MODOS):
+    for ax, modo in zip(ejes, modos):
         ruta = RES / f"eventos_{escenario}_{modo}.json"
-        if not ruta.exists():
-            continue
         datos = json.loads(ruta.read_text(encoding="utf-8"))
         ev = datos["eventos"]
         ini = {e["id"]: e for e in ev if e["tipo"] == "inicio"}

@@ -3,17 +3,21 @@ import { Escena } from './escena.js';
 import { Gantt } from './gantt.js';
 
 const $ = (s) => document.querySelector(s);
-const NOMBRE_MODO = { secuencial: 'Secuencial', concurrente: 'Concurrente', paralelo: 'Paralelo' };
+const NOMBRE_MODO = { secuencial: 'Secuencial', concurrente: 'Concurrente', paralelo: 'Paralelo', distribuido: 'Distribuido' };
+const MODOS = ['secuencial', 'concurrente', 'paralelo', 'distribuido'];
 const NOMBRE_ESC = { io: 'E/S', cpu: 'CPU', mixto: 'Mixto' };
 const NOMBRE_ETAPA = { pedido: 'toma el pedido', preparar: 'prepara', caja_camino: 'va a la caja',
   caja_espera: 'pide el Lock de la caja', caja_cobro: 'obtiene el Lock y cobra', entrega: 'suelta el Lock y entrega' };
-const ETQ_LOG = { ejecucion_inicio: 'ejecución', ejecucion_fin: 'total' };
-const COLOR_MODO = { secuencial: 'var(--sec)', concurrente: 'var(--con)', paralelo: 'var(--par)' };
+const ETQ_LOG = { ejecucion_inicio: 'ejecución', ejecucion_fin: 'total', nodo_alta: 'nodo', asignada: 'mensaje',
+  nodo_caido: 'sin latido', falla: 'falla' };
+const COLOR_MODO = { secuencial: 'var(--sec)', concurrente: 'var(--con)', paralelo: 'var(--par)', distribuido: 'var(--dis)' };
+const ms = (s) => `${(s * 1000).toFixed(s < 0.01 ? 2 : 0)} ms`;
 
 const CONCEPTO = {
   secuencial: '<b>Una solicitud después de otra.</b> Un solo mesero (hilo) atiende mesa por mesa: no toma el siguiente pedido hasta entregar el anterior. Si espera en la cocina, las cafeteras (núcleos) quedan quietas y las demás mesas hacen fila.',
   concurrente: '<b>Varias solicitudes avanzan intercalándose.</b> Varios meseros (hilos) del mismo proceso comparten la pizarra (memoria). Mientras uno espera en la cocina, otro trabaja. Pero hay una sola llave (GIL): solo quien la tiene prepara en una cafetera, así que con pedidos de CPU se turnan.',
   paralelo: '<b>Varias solicitudes se ejecutan al mismo tiempo.</b> Cada mesero es un proceso con su propia pizarra (memoria) y su propia llave (GIL), así que varios usan cafeteras (núcleos) a la vez. El costo: crear procesos tarda y se comunican por mensajes (IPC).',
+  distribuido: '<b>Varios nodos independientes coordinados por la red.</b> Cada mesero es un <b>nodo</b>: un programa aparte en este servidor o el navegador de alguien que prestó su equipo, sin memoria compartida. El <b>coordinador</b> (rack) reparte las solicitudes (balanceo de carga), presta el candado de la caja (Lock distribuido) y da la hora (cada nodo tiene su propio reloj). Cada mensaje paga la latencia de la red, y si un nodo deja de enviar latidos su trabajo se reasigna.',
 };
 const PISTA = {
   io: 'Cada pedido se espera en la cocina, como una consulta a una base de datos: el mesero no usa ninguna cafetera mientras espera.',
@@ -23,7 +27,7 @@ const PISTA = {
 
 const estado = {
   modo: 'secuencial', escenario: 'io', trabajadores: 4, duracion: 1, realista: true,
-  llegadas: 'escalonadas', llegaron: 0,
+  llegadas: 'escalonadas', llegaron: 0, latencia: 30, caida: false,
   info: null, ocupado: false, t0: 0, corriendo: false,
   carriles: new Map(), listas: 0, activas: new Set(), solicitudes: [],
   eventos: [], ultimaEjecucion: null, historial: [], esperando: null, nEventos: 0,
@@ -60,6 +64,17 @@ function refrescarTextos() {
   $('#v-trab').textContent = estado.modo === 'secuencial' ? '1 (secuencial)' : estado.trabajadores;
   $('#v-dur').textContent = `${estado.duracion.toFixed(1)} s`;
   $('#realista').checked = estado.realista;
+  $('#sec-red').hidden = estado.modo !== 'distribuido';
+  $('#v-lat').textContent = `${estado.latencia} ms`;
+  $('#caida').checked = estado.caida;
+  const red = estado.info?.coordinador ?? {};
+  const externos = red.remotos ?? [];
+  const cupo = Math.max(0, (red.max_nodos ?? 12) - estado.trabajadores);
+  $('#pista-red').innerHTML = `El control de latencia simula la red de los <b>${estado.trabajadores} nodos del servidor</b>; los equipos que se suman desde el navegador usan su red real. `
+    + (estado.caida ? 'Un nodo del servidor se apagará sin avisar: el coordinador lo nota al faltar sus <b>latidos</b> (1 s) y reasigna su solicitud. ' : '')
+    + (externos.length
+      ? `Se suman <b>${Math.min(externos.length, cupo)}</b> de ${externos.length} nodo(s) externo(s) conectados.`
+      : 'Abre <a href="/nodo.html" target="_blank" rel="noopener">/nodo.html</a> en otro equipo o celular para sumarlo como nodo.');
   $('#pista-realista').innerHTML = estado.realista
     ? 'Cada solicitud pasa por <b>4 etapas reales</b> en el servidor: tomar el pedido (E/S), prepararlo (CPU o E/S), cobrar en la <b>única caja</b> (sección crítica con <code>Lock</code>) y entregarlo (E/S). Los meseros caminan sincronizados con esas etapas.'
     : 'Solo se mide la preparación: el modelo puro, ideal para comparar tiempos. Caminar es animación y los meseros se apuran para alcanzar a los eventos.';
@@ -70,7 +85,7 @@ function previsualizar() {
   if (!estado.ocupado) {
     escena.reconfigurar({ modo: estado.modo, trabajadores: estado.trabajadores,
       nucleos: estado.info?.nucleos ?? 4, topologia: estado.info?.topologia,
-      gil: estado.info?.gil ?? true, realista: estado.realista });
+      gil: estado.info?.gil ?? true, realista: estado.realista, latencia: estado.latencia / 1000 });
   }
   pintarComparacion();
 }
@@ -91,6 +106,8 @@ $('#realista').addEventListener('change', (e) => {
   try { localStorage.setItem('cafeteria-tiempo-real', estado.realista ? '1' : '0'); } catch { /* sin almacenamiento */ }
   previsualizar();
 });
+$('#latencia').addEventListener('input', (e) => { estado.latencia = +e.target.value; refrescarTextos(); });
+$('#caida').addEventListener('change', (e) => { estado.caida = e.target.checked; refrescarTextos(); });
 $('#duracion').addEventListener('input', (e) => { estado.duracion = +e.target.value; refrescarTextos(); pintarComparacion(); });
 $('#ejecutar').addEventListener('click', () => ejecutar(estado.modo).catch(avisar));
 $('#comparar').addEventListener('click', compararTodos);
@@ -100,7 +117,7 @@ $('#exp-csv').addEventListener('click', () => exportar('csv'));
 
 function bloquear(si) {
   estado.ocupado = si;
-  ['#ejecutar', '#comparar', '#trabajadores', '#duracion', '#realista'].forEach((s) => { $(s).disabled = si; });
+  ['#ejecutar', '#comparar', '#trabajadores', '#duracion', '#realista', '#latencia', '#caida'].forEach((s) => { $(s).disabled = si; });
   document.querySelectorAll('.segmentos button').forEach((b) => { b.disabled = si; });
   if (!si) refrescarTextos();
 }
@@ -110,7 +127,7 @@ async function ejecutar(modo) {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ modo, escenario: estado.escenario,
       trabajadores: estado.trabajadores, duracion: estado.duracion, realista: estado.realista,
-      llegadas: estado.llegadas }),
+      llegadas: estado.llegadas, latencia: estado.latencia, caida: estado.caida }),
   });
   const datos = await r.json();
   if (!r.ok) throw new Error(datos.error || 'No se pudo ejecutar');
@@ -120,7 +137,7 @@ async function ejecutar(modo) {
 
 async function compararTodos() {
   try {
-    for (const modo of ['secuencial', 'concurrente', 'paralelo']) {
+    for (const modo of MODOS) {
       estado.modo = modo;
       marcar('#modo', modo);
       refrescarTextos();
@@ -146,6 +163,8 @@ function conectar() {
 }
 
 function manejar(ev) {
+  // Un nodo remoto informa los núcleos de SU computador, no de esta barra
+  if (ev.remoto && ev.nucleo != null) ev = { ...ev, nucleo: null };
   switch (ev.tipo) {
     case 'ejecucion_inicio': {
       Object.assign(estado, { t0: performance.now(), corriendo: true, listas: 0, llegaron: 0,
@@ -157,12 +176,14 @@ function manejar(ev) {
       if (!estado.ocupado) bloquear(true);   // otra pestaña lanzó la ejecución
       escena.reconfigurar({ modo: ev.modo, trabajadores: ev.trabajadores, nucleos: ev.nucleos,
         topologia: estado.info?.topologia,
-        pid: ev.pid_servidor, gil: estado.info?.gil ?? true, realista: !!ev.realista });
+        pid: ev.pid_servidor, gil: estado.info?.gil ?? true, realista: !!ev.realista,
+        latencia: ev.latencia ?? 0, remotos: ev.remotos ?? [] });
       escena.crearSolicitudes(ev.solicitudes);
       gantt.reiniciar(ev.solicitudes);
       $('#log').innerHTML = '';
       estado.nEventos = 0;
       const quien = ev.modo === 'secuencial' ? '1 mesero'
+        : ev.modo === 'distribuido' ? `${ev.trabajadores} nodos · latencia ${ms(ev.latencia ?? 0)}`
         : `${ev.trabajadores} meseros (${ev.modo === 'paralelo' ? 'procesos' : 'hilos'})`;
       $('#estado-escena').innerHTML = `Ejecutando · <b>${NOMBRE_MODO[ev.modo]}</b> · ${NOMBRE_ESC[ev.escenario]} · ${quien}${ev.realista ? ' · tiempo real' : ''}`;
       ['#m-resp', '#m-arranque'].forEach((s) => { $(s).textContent = '—'; });
@@ -174,7 +195,10 @@ function manejar(ev) {
       escena.llegada(ev); gantt.llegada(ev);
       break;
     case 'inicio': {
-      if (!estado.carriles.has(ev.trabajador)) estado.carriles.set(ev.trabajador, estado.carriles.size);
+      if (!estado.carriles.has(ev.trabajador)) {
+        // En distribuido cada nodo tiene su puesto fijo (el que le dio el coordinador)
+        estado.carriles.set(ev.trabajador, ev.nodo_idx ?? estado.carriles.size);
+      }
       const carril = estado.carriles.get(ev.trabajador);
       estado.activas.add(ev.id);
       escena.inicio(ev, carril);
@@ -189,6 +213,14 @@ function manejar(ev) {
       escena.fin(ev); gantt.fin(ev);
       break;
     case 'cpu': escena.cpu(ev.uso); break;
+    case 'nodo_alta': escena.nodo(ev); break;
+    case 'asignada': escena.asignada(ev); break;
+    case 'nodo_caido': escena.caido(ev); break;
+    case 'red':
+      if (estado.info) estado.info.coordinador = ev;
+      pintarRed();
+      if (!estado.ocupado) refrescarTextos();
+      return;                                // no es un evento de la ejecución
     case 'ejecucion_fin':
       estado.corriendo = false;
       gantt.ahora = ev.t;
@@ -229,7 +261,8 @@ function registrar(ev) {
   if (['inicio', 'progreso', 'fin'].includes(ev.tipo)) {
     const nucleo = ev.nucleo != null ? ` · núcleo ${ev.nucleo}` : '';
     const pct = ev.tipo === 'progreso' ? ` ${Math.round(ev.progreso * 100)}%` : '';
-    detalle = `#${ev.id}${pct} · ${ev.trabajador} (pid ${ev.pid}, tid ${ev.tid})${nucleo}`;
+    const donde = ev.navegador ? 'navegador' : `pid ${ev.pid}, tid ${ev.tid}`;
+    detalle = `#${ev.id}${pct} · ${ev.trabajador} (${donde})${nucleo}`;
   } else if (ev.tipo === 'etapa') {
     const dur = ev.dur ? ` · ${ev.dur.toFixed(2)} s` : '';
     detalle = `#${ev.id} ${NOMBRE_ETAPA[ev.etapa] ?? ev.etapa}${dur} · ${ev.trabajador}`;
@@ -244,6 +277,21 @@ function registrar(ev) {
   } else if (ev.tipo === 'ejecucion_fin') {
     detalle = `tiempo total ${ev.t.toFixed(3)} s`;
     clase = 'sistema';
+  } else if (ev.tipo === 'nodo_alta') {
+    const reloj = ev.desfase ? ` · su reloj iba ${ev.desfase > 0 ? '+' : ''}${ms(ev.desfase)}, Cristian ajusta ${ev.ajuste > 0 ? '+' : ''}${ms(ev.ajuste)}` : '';
+    const donde = ev.pid?.startsWith?.('web-') ? `navegador de ${ev.host}` : `pid ${ev.pid}, ${ev.host}`;
+    const corr = !ev.desfase && Math.abs(ev.ajuste) > 0.001 ? ` · Cristian ajusta su reloj ${ev.ajuste > 0 ? '+' : ''}${ms(ev.ajuste)}` : reloj;
+    detalle = `${ev.nodo} se registra (${donde}) · RTT ${ms(ev.rtt)}${corr}`;
+    clase = 'red';
+  } else if (ev.tipo === 'asignada') {
+    detalle = `coordinador → ${ev.nodo}: solicitud #${ev.id}${ev.reintento ? ' (REASIGNADA)' : ''} · latencia ${ms(ev.latencia)}`;
+    clase = ev.reintento ? 'falla' : 'red';
+  } else if (ev.tipo === 'falla') {
+    detalle = `${ev.nodo} se apaga sin avisar con la solicitud #${ev.id} a medias`;
+    clase = 'falla';
+  } else if (ev.tipo === 'nodo_caido') {
+    detalle = `${ev.nodo} lleva ${ev.silencio.toFixed(2)} s sin latido: el coordinador lo da por caído${ev.id ? ` y reasigna #${ev.id}` : ''}`;
+    clase = 'falla';
   } else if (ev.tipo === 'error') {
     detalle = ev.mensaje;
   }
@@ -287,7 +335,7 @@ function pintarComparacion(ref) {
   const tr = ref ? !!ref.realista : estado.realista;
   const lleg = ref ? (ref.llegadas ?? 'juntas') : estado.llegadas;
   $('#comp-titulo').textContent = `${NOMBRE_ESC[esc]} · ${dur.toFixed(1)} s · llegadas ${lleg}${tr ? ' · tiempo real' : ''}`;
-  const filas = ['secuencial', 'concurrente', 'paralelo'].map((m) => [m, ultimoPor(esc, dur, m, tr, lleg)]);
+  const filas = MODOS.map((m) => [m, ultimoPor(esc, dur, m, tr, lleg)]);
   const max = Math.max(0.001, ...filas.map(([, r]) => r?.total ?? 0));
   $('#barras').innerHTML = filas.map(([m, r]) => {
     const ancho = r ? Math.max(4, (r.total / max) * 100) : 0;
@@ -300,9 +348,14 @@ function pintarComparacion(ref) {
 }
 
 function conclusion(esc, r, tr) {
-  const { secuencial: s, concurrente: c, paralelo: p } = r;
-  if (!s || (!c && !p)) return 'Ejecuta los tres modelos con la misma carga para compararlos.';
+  const { secuencial: s, concurrente: c, paralelo: p, distribuido: d } = r;
+  if (!s || (!c && !p && !d)) return 'Ejecuta los modelos con la misma carga para compararlos.';
   const x = (a) => (a ? `${(s.total / a.total).toFixed(1)}×` : '—');
+  const extra = d ? ` Distribuido ${x(d)}: los nodos trabajan a la vez como los procesos, pero cada mensaje paga la red y el coordinador es un punto central; a cambio se puede crecer sumando computadores.` : '';
+  return conclusionLocal(esc, x, c, p, tr) + extra;
+}
+
+function conclusionLocal(esc, x, c, p, tr) {
   if (tr) {
     const cobros = 10 * (estado.info?.etapas?.cobro ?? 0.3);
     return `Tiempo real: hilos ${x(c)}, procesos ${x(p)}. Tomar pedidos y entregar se superpone entre meseros, pero la caja es una sola: los 10 cobros van en fila (≥ ${cobros.toFixed(1)} s) por más meseros que haya. Esa parte secuencial limita la aceleración (ley de Amdahl).`;
@@ -364,6 +417,13 @@ function tic() {
   requestAnimationFrame(tic);
 }
 
+function pintarRed() {
+  const chip = $('#chip-red');
+  if (!chip) return;
+  const n = estado.info?.coordinador?.remotos?.length ?? 0;
+  chip.innerHTML = `<b>${n}</b> ${n === 1 ? 'nodo externo' : 'nodos externos'} · Sumar mi equipo`;
+}
+
 // ----------------------------------------------------------------- arranque
 async function iniciar() {
   const info = await (await fetch('/api/info')).json();
@@ -382,7 +442,9 @@ async function iniciar() {
     <span class="chip">Python <b>${info.python}</b></span>
     <span class="chip" title="Global Interpreter Lock">GIL <b>${info.gil ? 'activo' : 'desactivado'}</b></span>
     <span class="chip" title="Linux permite leer en qué núcleo corre cada hilo">núcleo por hilo <b>${info.nucleo_detectable ? 'sí' : 'no'}</b></span>
-    <span class="chip">uso de CPU <b>${info.uso_cpu_disponible ? 'real' : 'no disponible'}</b></span>`);
+    <span class="chip">uso de CPU <b>${info.uso_cpu_disponible ? 'real' : 'no disponible'}</b></span>
+    <a class="chip enlace" id="chip-red" href="/nodo.html" target="_blank" rel="noopener" title="Abre esta página en otro equipo o celular para prestarlo como nodo"></a>`);
+  pintarRed();
   estado.historial = await (await fetch('/api/historial')).json();
   pintarHistorial();
   previsualizar();

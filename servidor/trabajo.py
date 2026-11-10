@@ -61,7 +61,9 @@ def calibrar(muestra: int = 300_000, intentos: int = 3) -> int:
     return int(mejor)
 
 
-def atender(solicitud: dict, cola, t0: float, caja=None, etapas: dict | None = None) -> dict:
+def atender(solicitud: dict, cola, t0: float, caja=None, etapas: dict | None = None,
+            trabajador: str | None = None, marca: dict | None = None,
+            latencia: float = 0.0) -> dict:
     """Procesa una solicitud y emite sus eventos a `cola`.
 
     `cola` es una queue.Queue (secuencial / hilos) o una cola de Manager
@@ -76,10 +78,16 @@ def atender(solicitud: dict, cola, t0: float, caja=None, etapas: dict | None = N
         3. caja            registrar la venta en un recurso COMPARTIDO protegido
                            con un Lock: solo un trabajador a la vez (sección crítica)
         4. entrega  (E/S)  enviar la respuesta: el mesero lleva la taza
+
+    Modo distribuido (lo usa servidor/nodo.py):
+        trabajador  nombre del nodo ("Nodo 2") en vez del hilo o proceso.
+        marca       campos que se agregan a cada evento (nodo, ejecución…).
+        latencia    segundos que tarda la respuesta en viajar por la red.
     """
     pid = os.getpid()
     tid = threading.get_native_id()
-    trabajador = nombre_trabajador()
+    trabajador = trabajador or nombre_trabajador()
+    marca = marca or {}
 
     def emitir(tipo: str, **extra) -> None:
         cola.put({
@@ -90,6 +98,7 @@ def atender(solicitud: dict, cola, t0: float, caja=None, etapas: dict | None = N
             "pid": pid,
             "tid": tid,
             "nucleo": nucleo_actual(),
+            **marca,
             **extra,
         })
 
@@ -119,5 +128,7 @@ def atender(solicitud: dict, cola, t0: float, caja=None, etapas: dict | None = N
             time.sleep(etapas["cobro"])
         emitir("etapa", etapa="entrega", dur=etapas["entrega"])
         time.sleep(etapas["entrega"])
+    if latencia:
+        time.sleep(latencia)       # la respuesta viaja por la red hasta el coordinador
     emitir("fin")
     return {"id": solicitud["id"], "trabajador": trabajador, "pid": pid}

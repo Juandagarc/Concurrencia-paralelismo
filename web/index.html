@@ -18,7 +18,7 @@
       <span class="logo" aria-hidden="true"></span>
       <div>
         <h1>Laboratorio de concurrencia y paralelismo</h1>
-        <p>Grupo 1 · Sistemas Distribuidos · un servidor real atiende 10 solicitudes, contado como una cafetería</p>
+        <p>Grupo 1 · Sistemas Distribuidos · un servidor real atiende 10 solicitudes (en un nodo o repartidas entre varios), contado como una cafetería</p>
       </div>
     </div>
     <div class="equipo" id="equipo">
@@ -29,10 +29,11 @@
   <aside class="panel izq">
     <section>
       <h2>Modelo de ejecución</h2>
-      <div class="segmentos" id="modo" role="radiogroup">
+      <div class="segmentos cuatro" id="modo" role="radiogroup">
         <button data-v="secuencial" class="activo">Secuencial</button>
         <button data-v="concurrente">Concurrente</button>
         <button data-v="paralelo">Paralelo</button>
+        <button data-v="distribuido">Distribuido</button>
       </div>
       <p class="concepto" id="concepto"></p>
     </section>
@@ -56,6 +57,19 @@
       <p class="pista" id="pista-llegadas"></p>
     </section>
 
+    <section class="red" id="sec-red" hidden>
+      <h2>Red del sistema distribuido</h2>
+      <label class="deslizador">Latencia de red <output id="v-lat">30 ms</output>
+        <input type="range" id="latencia" min="0" max="200" step="5" value="30">
+      </label>
+      <label class="interruptor">
+        <input type="checkbox" id="caida">
+        <span class="riel" aria-hidden="true"></span>
+        <span><b>Simular caída de un nodo</b><small>se apaga a mitad de una solicitud</small></span>
+      </label>
+      <p class="pista" id="pista-red"></p>
+    </section>
+
     <section class="tiempo-real">
       <label class="interruptor">
         <input type="checkbox" id="realista" checked>
@@ -72,23 +86,25 @@
       <label>Duración por solicitud <output id="v-dur">1.0 s</output>
         <input type="range" id="duracion" min="0.2" max="3" step="0.1" value="1">
       </label>
-      <p class="pista">Meseros: hilos en concurrente o procesos en paralelo (hasta 8, como una cafetería real). El secuencial siempre usa 1; si mueves este control estando en secuencial, se cambia a concurrente.</p>
+      <p class="pista">Meseros: hilos en concurrente, procesos en paralelo o nodos en distribuido (hasta 8, como una cafetería real). El secuencial siempre usa 1; si mueves este control estando en secuencial, se cambia a concurrente.</p>
     </section>
 
     <section class="acciones">
       <button class="primario" id="ejecutar">Ejecutar</button>
-      <button class="secundario" id="comparar">Comparar los 3 modelos</button>
+      <button class="secundario" id="comparar">Comparar los 4 modelos</button>
     </section>
 
     <section class="leyenda">
       <h2>La cafetería</h2>
       <ul>
         <li><i style="background:var(--espera)"></i><span><b>Mesa</b> = solicitud de un usuario (aro gris: esperando)</span></li>
-        <li><i style="background:var(--io)"></i><span><b>Mesero</b> = hilo; su color es el mismo de la línea de tiempo</span></li>
+        <li><i style="background:var(--io)"></i><span><b>Mesero</b> = hilo (proceso en paralelo, nodo en distribuido); su color es el mismo de la línea de tiempo</span></li>
         <li><i class="tapete"></i><span><b>Tapete y pizarra</b> = proceso y su memoria</span></li>
         <li><i style="background:var(--cpu)"></i><span><b>Máquina de café</b> = núcleo físico; cada <b>boquilla</b> = núcleo lógico (Hyper-Threading). Brillo y vapor = uso real</span></li>
         <li><i style="background:#c2410c"></i><span><b>Cocina</b> = E/S: esperar sin usar la CPU</span></li>
         <li><i style="background:#ef4444"></i><span><b>Caja con candado</b> = recurso compartido con <code>Lock</code>: uno a la vez (tiempo real)</span></li>
+        <li><i style="background:var(--dis)"></i><span><b>Coordinador (rack)</b> = balanceador, dueño del Lock de la caja y reloj de referencia (distribuido)</span></li>
+        <li><i class="paquete"></i><span><b>Paquete</b> = mensaje por la red (TCP) entre el coordinador y un nodo</span></li>
         <li><i class="llave"></i><span><b>Llave dorada</b> = GIL: solo quien la tiene ejecuta Python</span></li>
         <li><i style="background:var(--listo)"></i><span><b>Taza en la mesa</b> = respuesta entregada</span></li>
       </ul>

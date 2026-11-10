@@ -6,6 +6,8 @@
 //   Cafetera           = un núcleo de CPU (brillo y vapor = uso real medido)
 //   Cocina             = E/S: el mesero espera sin usar ninguna cafetera
 //   Llave dorada       = el GIL: solo quien la tiene ejecuta código Python
+//   Rack violeta       = el coordinador del modo distribuido (balanceo, Lock, reloj)
+//   Paquete violeta    = un mensaje por la red entre el coordinador y un nodo
 //
 // Todo lo que se mueve responde a eventos reales del servidor Python.
 import * as THREE from 'three';
@@ -38,6 +40,8 @@ const VELOCIDAD = 7;          // unidades por segundo al caminar sin prisa
 const PRISA_MAX = 10;         // si se atrasa frente a los eventos reales, camina hasta 10× más rápido
 const PRISA_POR_SEGUNDO = 2;  // cuánto acelera por cada segundo de atraso
 const SOBRE_CABEZA = new THREE.Vector3(0, 2.3, 0);
+const RACK = new THREE.Vector3(-9.9, 0, -1.4);    // el coordinador del modo distribuido
+const COL_RED = '#a78bfa';
 
 // ------------------------------------------------- geometrías y materiales
 const G = {
@@ -235,6 +239,23 @@ function crearTaza() {
   asa.position.set(0.1, 0.08, 0);
   g.add(plato, taza, cafe, asa);
   return g;
+}
+
+/** El coordinador: un rack de servidor con luces que parpadean al enviar mensajes. */
+function crearRack() {
+  const g = new THREE.Group();
+  const cuerpo = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.3, 0.9), mat('#1e1b2e', { roughness: 0.5, metalness: 0.4 }));
+  cuerpo.position.y = 1.15;
+  g.add(cuerpo);
+  const led = new THREE.MeshStandardMaterial({ color: '#2e1065', emissive: COL_RED, emissiveIntensity: 0.4 });
+  for (let i = 0; i < 6; i++) {
+    const bahia = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.26, 0.02), mat('#312e48', { roughness: 0.4 }));
+    bahia.position.set(0, 0.35 + i * 0.32, 0.46);
+    const luz = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.05, 0.02), led);
+    luz.position.set(-0.1, 0.35 + i * 0.32, 0.475);
+    g.add(bahia, luz);
+  }
+  return { g, led };
 }
 
 function crearMesa() {
@@ -439,7 +460,7 @@ export class Escena {
       sub = 'se usa en modo tiempo real';
       color = '#64748b';
     } else if (this.cajaDueno) {
-      sub = `Lock ocupado por ${this.cajaDueno.nombre}`;
+      sub = `${this.modo === 'distribuido' ? 'el coordinador se lo prestó a' : 'Lock ocupado por'} ${this.cajaDueno.nombre}`;
       color = '#ef4444';
     } else {
       sub = 'Lock libre';
@@ -449,7 +470,8 @@ export class Escena {
     if (this.realista && n) sub += ` · ${n} en fila`;
     matCandado.color.set(color);
     matCandado.emissive.set(color);
-    lbl.element.innerHTML = `Caja · sección crítica<small>${sub}</small>`;
+    const titulo = this.modo === 'distribuido' ? 'Caja · Lock distribuido' : 'Caja · sección crítica';
+    lbl.element.innerHTML = `${titulo}<small>${sub}</small>`;
   }
 
   _vaciar(grupo) {
@@ -462,11 +484,17 @@ export class Escena {
 
   // -------------------------------------------------------- reconfigurar
   /** Arma el personal según el modelo: cuántos meseros, procesos y llaves. */
-  reconfigurar({ modo, trabajadores, nucleos, topologia, pid, gil = true, realista = false }) {
+  reconfigurar({ modo, trabajadores, nucleos, topologia, pid, gil = true, realista = false,
+    latencia = 0, remotos = [] }) {
     this._vaciar(this.personal);
     this.meseros = [];
     this.llaves = [];
     this.modo = modo;
+    this.latencia = latencia;
+    this.rack = null;
+    // En paralelo y distribuido cada mesero tiene su propia memoria y su propio GIL
+    const propio = modo === 'paralelo' || modo === 'distribuido';
+    const distribuido = modo === 'distribuido';
     this.realista = realista;
     this.colaCaja = [];
     this.cajaDueno = null;
@@ -503,12 +531,14 @@ export class Escena {
 
     const pizarras = [];
     let texto;
-    if (modo === 'paralelo') {
+    if (propio) {
       xs.forEach((x) => {
-        tapete(x, esp * 0.88, '#fdba74');
+        tapete(x, esp * 0.88, distribuido ? COL_RED : '#fdba74');
         pizarras.push(pizarra(x, Math.min(0.9, esp * 0.6)));
       });
-      texto = `${n} procesos<small>cada uno con su pizarra (memoria)${gil ? ' y su propia llave (GIL)' : ''}</small>`;
+      texto = distribuido
+        ? `${n} nodos<small>programas aparte (podrían ser otros computadores): sin memoria compartida, solo mensajes por la red</small>`
+        : `${n} procesos<small>cada uno con su pizarra (memoria)${gil ? ' y su propia llave (GIL)' : ''}</small>`;
     } else {
       const ancho = Math.max(3.2, n * esp + 0.2);
       tapete(0, ancho, '#7dd3fc');
@@ -519,11 +549,13 @@ export class Escena {
         : `${proc}<small>${n} meseros (hilos) comparten la pizarra (memoria)${gil ? ' y una sola llave (GIL)' : ''}</small>`;
     }
     // A la izquierda del personal si cabe; si no, debajo del primer tapete
-    const izq = modo === 'paralelo' ? xs[0] - esp * 0.44 : -Math.max(3.2, n * esp + 0.2) / 2;
-    const cabe = izq > -7;
+    const izq = propio ? xs[0] - esp * 0.44 : -Math.max(3.2, n * esp + 0.2) / 2;
+    const cabe = izq > -7 && !distribuido;     // en distribuido ese lugar es del coordinador
     const e = etiqueta(texto, `lbl lbl-proceso${cabe ? ' derecha' : ''}`, cabe ? 1 : 0, cabe ? 0.5 : 0);
     e.position.set(cabe ? izq - 0.3 : izq, 0.02, cabe ? zMat : zMat + prof / 2 + 0.08);
-    this.personal.add(e);
+    // En distribuido lo explican el coordinador y el rótulo de cada nodo
+    if (!distribuido) this.personal.add(e);
+    else e.element.remove();
 
     xs.forEach((x, i) => {
       const color = PALETA[i % PALETA.length];
@@ -540,13 +572,20 @@ export class Escena {
       this.personal.add(p.g);
       const m = {
         ...p, idx: i, color, lbl, anillo,
-        nombre: modo === 'secuencial' ? 'Hilo principal' : modo === 'paralelo' ? `Proceso ${i + 1}` : `Hilo_${i}`,
+        nombre: modo === 'secuencial' ? 'Hilo principal' : modo === 'paralelo' ? `Proceso ${i + 1}`
+          : distribuido ? (i < n - remotos.length ? `Nodo ${i + 1}` : remotos[i - (n - remotos.length)]) : `Hilo_${i}`,
         casa: new THREE.Vector3(x, 0, Z_CASA), ruta: [], rotFinal: 0, fase: 0,
         solicitud: null, tipo: null, nucleo: null, progreso: 0, entregando: null, regresarEn: null,
       };
       this.meseros.push(m);
       this._lblMesero(m);
+      if (distribuido) {
+        m.lblNodo = etiqueta('arrancando…', 'lbl lbl-nodo', 0.5, 0);
+        m.lblNodo.position.set(x, 0.02, zMat - prof / 2 + 0.45);   // al pie de su pizarra
+        this.personal.add(m.lblNodo);
+      }
     });
+    if (distribuido) this._construirCoordinador(xs, zMat);
 
     if (gil) {
       pizarras.forEach((pos) => {
@@ -565,6 +604,85 @@ export class Escena {
       : Array.from({ length: Math.max(1, nucleos || 1) }, (_, i) => [i]);
     const clave = JSON.stringify(grupos);
     if (clave !== this.k) this._construirCafeteras(grupos, clave);
+  }
+
+  /** Rack del coordinador y los cables de red hacia cada nodo y hacia la caja. */
+  _construirCoordinador(xs, zMat) {
+    const rack = crearRack();
+    rack.g.position.copy(RACK);
+    rack.g.rotation.y = 0.5;
+    const lbl = etiqueta('Coordinador<small>balanceo · Lock de la caja<br>reloj · latidos</small>',
+      'lbl lbl-coord', 0.5, 1);
+    lbl.position.set(RACK.x, 2.6, RACK.z);
+    const cable = new THREE.LineDashedMaterial({ color: COL_RED, dashSize: 0.25, gapSize: 0.18, transparent: true, opacity: 0.7 });
+    const linea = (hasta) => {
+      const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(RACK.x, 0.04, RACK.z), hasta]), cable);
+      l.computeLineDistances();
+      this.personal.add(l);
+    };
+    xs.forEach((x) => linea(new THREE.Vector3(x, 0.04, zMat - 1.2)));
+    linea(new THREE.Vector3(CAJA.x, 0.04, CAJA.z + 0.5));
+    this.personal.add(rack.g, lbl);
+    this.rack = { ...rack, pulso: 0, cima: new THREE.Vector3(RACK.x, 2.4, RACK.z) };
+  }
+
+  /** Un mensaje viaja por la red: del coordinador a un nodo o de vuelta. */
+  _paquete(m, haciaNodo) {
+    if (!this.rack) return;
+    const bola = new THREE.Mesh(G.vapor, new THREE.MeshBasicMaterial({ color: '#c4b5fd' }));
+    bola.scale.setScalar(1.6);
+    const cabeza = () => m.g.position.clone().add(new THREE.Vector3(0, 2.2, 0));
+    const dur = Math.min(1.2, 0.35 + this.latencia * 3);
+    this.rack.pulso = 1;
+    const quitar = (o) => { this.efectos.remove(o); o.material.dispose(); };
+    if (haciaNodo) this._vuelo(bola, this.rack.cima, cabeza, dur, 1.2, quitar);
+    else this._vuelo(bola, cabeza(), this.rack.cima, dur, 1.2, (o) => { quitar(o); if (this.rack) this.rack.pulso = 1; });
+  }
+
+  /** Un nodo se registró: muestra su PID, su RTT y cómo se corrigió su reloj. */
+  nodo(ev) {
+    const m = this.meseros[ev.nodo_idx];
+    if (!m) return;
+    m.nombre = ev.nodo;
+    this._lblMesero(m);
+    if (!m.lblNodo) return;
+    const ms = (v) => `${v > 0 ? '+' : ''}${(v * 1000).toFixed(0)} ms`;
+    // ajuste ≈ −(lo que el reloj del nodo va adelantado), medido con Cristian
+    const reloj = Math.abs(ev.ajuste) > 0.001 ? `reloj ${ms(-ev.ajuste)} ✓` : 'reloj al día';
+    const quien = String(ev.pid).startsWith('web-') ? 'navegador' : `pid ${ev.pid}`;
+    m.lblNodo.element.innerHTML = this.meseros.length > 5 ? quien : `${quien}<br>${reloj}`;
+    m.lblNodo.element.title = `${ev.host} · RTT ${(ev.rtt * 1000).toFixed(2)} ms · latencia simulada `
+      + `${(ev.latencia * 1000).toFixed(0)} ms · Cristian corrigió el reloj ${ms(ev.ajuste)}`;
+  }
+
+  asignada(ev) {
+    const m = this.meseros[ev.nodo_idx];
+    if (m && !m.caido) this._paquete(m, true);
+  }
+
+  /** El coordinador dejó de recibir latidos: el nodo se da por caído. */
+  caido(ev) {
+    const m = this.meseros[ev.nodo_idx];
+    if (!m) return;
+    this._soltarLlave(m);
+    this.colaCaja = this.colaCaja.filter((x) => x !== m);
+    if (this.cajaDueno === m) this.cajaDueno = null;
+    Object.assign(m, { caido: true, cae: 0, ruta: [], solicitud: null, entregando: null, etapa: null });
+    m.ticket.visible = m.tazaBandeja.visible = m.anillo.visible = false;
+    m.g.traverse((o) => { if (o.material && !o.material.userData.compartido) o.material.color.set('#475569'); });
+    m.lbl.element.classList.add('caido');
+    if (m.lblNodo) {
+      m.lblNodo.element.classList.add('caido');
+      m.lblNodo.element.innerHTML = `caído<br>${ev.silencio.toFixed(1)} s sin latido`;
+    }
+    const c = ev.id != null ? this.clientes.get(ev.id) : null;
+    if (c) {
+      c.aro.material.color.set('#ef4444');
+      c.estadoEl.textContent = `${m.nombre} se cayó · reasignando`;
+    }
+    this._lblMesero(m);
+    this._lblCaja();
   }
 
   _construirCafeteras(grupos, clave) {
@@ -639,7 +757,7 @@ export class Escena {
   }
 
   // --------------------------------------------------------------- eventos
-  _llaveDe(m) { return this.llaves[this.modo === 'paralelo' ? m.idx : 0]; }
+  _llaveDe(m) { return this.llaves[this.modo === 'paralelo' || this.modo === 'distribuido' ? m.idx : 0]; }
   _tomarLlave(m) { const l = this._llaveDe(m); if (l) l.dueno = m; }
   _soltarLlave(m) { const l = this._llaveDe(m); if (l && l.dueno === m) l.dueno = null; }
 
@@ -695,6 +813,10 @@ export class Escena {
   _lblMesero(m) {
     const pct = Math.round(m.progreso * 100);
     let sub = m.entregando != null ? `llevando #${m.entregando}` : 'libre';
+    if (m.caido) {
+      m.lbl.element.innerHTML = `<b>${m.nombre}</b><small>caído · su trabajo se reasignó</small>`;
+      return;
+    }
     const ETAPA = { pedido: 'tomando el pedido', caja_camino: 'va a la caja',
       caja_espera: 'en fila de la caja', caja_cobro: 'cobrando', entrega: 'entregando' };
     if (m.solicitud != null && ETAPA[m.etapa]) {
@@ -897,6 +1019,7 @@ export class Escena {
     }
     if (!m) return;
     this._soltarLlave(m);
+    if (this.modo === 'distribuido') this._paquete(m, false);   // la respuesta vuelve al coordinador
     if (this.realista) {
       Object.assign(m, { solicitud: null, tipo: null, progreso: 0, etapa: null });
       this._lblMesero(m);
@@ -968,6 +1091,12 @@ export class Escena {
 
     for (const m of this.meseros) {
       const p = m.g.position;
+      if (m.caido) {                       // el nodo cayó: queda tendido en su puesto
+        m.cae = Math.min(1, m.cae + dt * 2.5);
+        m.g.rotation.x = -Math.PI / 2 * suave(m.cae);
+        p.y = 0.26 * m.cae;
+        continue;
+      }
       // Libre y lejos de casa: vuelve a su tapete después de un momento
       if (!m.ruta.length && m.solicitud == null && m.entregando == null
           && Math.hypot(p.x - m.casa.x, p.z - m.casa.z) > 0.05) {
@@ -1043,6 +1172,11 @@ export class Escena {
         m.anillo.rotation.z += dt * 3;
         m.anillo.scale.setScalar(1 + 0.1 * Math.sin(t * 4));
       }
+    }
+
+    if (this.rack) {
+      this.rack.pulso = Math.max(0, this.rack.pulso - dt * 2.5);
+      this.rack.led.emissiveIntensity = 0.4 + 2.2 * this.rack.pulso + 0.15 * Math.sin(t * 9);
     }
 
     if (this.caja) {
