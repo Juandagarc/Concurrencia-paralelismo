@@ -19,6 +19,18 @@ const CONCEPTO = {
   paralelo: '<b>Varias solicitudes se ejecutan al mismo tiempo.</b> Cada mesero es un proceso con su propia pizarra (memoria) y su propia llave (GIL), así que varios usan cafeteras (núcleos) a la vez. El costo: crear procesos tarda y se comunican por mensajes (IPC).',
   distribuido: '<b>Varios nodos independientes coordinados por la red.</b> Cada mesero es un <b>nodo</b>: un programa aparte en este servidor o el navegador de alguien que prestó su equipo, sin memoria compartida. El <b>coordinador</b> (rack) reparte las solicitudes (balanceo de carga), presta el candado de la caja (Lock distribuido) y da la hora (cada nodo tiene su propio reloj). Cada mensaje paga la latencia de la red, y si un nodo deja de enviar latidos su trabajo se reasigna.',
 };
+// Versión web (siempre distribuida): cada computador conectado es un mesero y el
+// modelo decide cómo los coordina el coordinador.
+const CONCEPTO_RED = {
+  secuencial: '<b>Un mesero a la vez: anillo con testigo.</b> Todos los computadores conectados son meseros, pero solo atiende quien tiene el testigo (la llave dorada). Al entregar el pedido, el testigo pasa al siguiente mesero del anillo. El sistema es distribuido, pero el trabajo va de a uno: los demás miran.',
+  concurrente: '<b>Todos atienden, pero se turnan la CPU.</b> Cada mesero toma su pedido y espera la cocina al mismo tiempo que los demás, pero para usar la cafetera necesita la única llave del sistema: un GIL distribuido que presta el coordinador. Los cálculos van de a uno y cada préstamo de la llave cuesta un viaje por la red.',
+  paralelo: '<b>Todos atienden y calculan a la vez, cada uno con su CPU.</b> Cada computador tiene su propia llave: nadie espera a nadie para calcular. El coordinador le da el siguiente pedido al mesero que quede libre, así que un computador rápido sirve más pedidos que uno lento.',
+};
+const esRed = () => !!estado.info?.red;
+const puedeControlar = () => !esRed() || estado.rol === 'coordinador';
+const modosActivos = () => (esRed() ? MODOS.slice(0, 3) : MODOS);
+const meseros = () => (estado.info?.coordinador?.remotos ?? []).slice(0, estado.info?.coordinador?.max_nodos ?? 12);
+
 const PISTA = {
   io: 'Cada pedido se espera en la cocina, como una consulta a una base de datos: el mesero no usa ninguna cafetera mientras espera.',
   cpu: 'Cada pedido se prepara en una cafetera sin parar: ocupa un núcleo entero y necesita la llave (GIL).',
@@ -27,7 +39,7 @@ const PISTA = {
 
 const estado = {
   modo: 'secuencial', escenario: 'io', trabajadores: 4, duracion: 1, realista: true,
-  llegadas: 'escalonadas', llegaron: 0, latencia: 30, caida: false,
+  llegadas: 'escalonadas', llegaron: 0, latencia: 30, caida: false, rol: null, sesion: null,
   info: null, ocupado: false, t0: 0, corriendo: false,
   carriles: new Map(), listas: 0, activas: new Set(), solicitudes: [],
   eventos: [], ultimaEjecucion: null, historial: [], esperando: null, nEventos: 0,
@@ -43,7 +55,7 @@ function segmentos(id, clave, alCambiar) {
   const g = $(id);
   g.addEventListener('click', (e) => {
     const b = e.target.closest('button');
-    if (!b || estado.ocupado) return;
+    if (!b || estado.ocupado || !puedeControlar()) return;
     g.querySelectorAll('button').forEach((x) => x.classList.toggle('activo', x === b));
     estado[clave] = b.dataset.v;
     alCambiar?.();
@@ -54,7 +66,7 @@ function marcar(id, valor) {
 }
 
 function refrescarTextos() {
-  $('#concepto').innerHTML = CONCEPTO[estado.modo];
+  $('#concepto').innerHTML = (esRed() ? CONCEPTO_RED : CONCEPTO)[estado.modo];
   $('#pista-escenario').textContent = PISTA[estado.escenario];
   $('#pista-llegadas').textContent = estado.llegadas === 'escalonadas'
     ? 'Los clientes entran de a uno, con separaciones al azar (en promedio 0,6 s). El patrón es el mismo en cada prueba para comparar justo.'
@@ -64,13 +76,19 @@ function refrescarTextos() {
   $('#v-trab').textContent = estado.modo === 'secuencial' ? '1 (secuencial)' : estado.trabajadores;
   $('#v-dur').textContent = `${estado.duracion.toFixed(1)} s`;
   $('#realista').checked = estado.realista;
-  $('#sec-red').hidden = estado.modo !== 'distribuido';
+  $('#sec-red').hidden = !esRed() && estado.modo !== 'distribuido';
   $('#v-lat').textContent = `${estado.latencia} ms`;
   $('#caida').checked = estado.caida;
   const red = estado.info?.coordinador ?? {};
   const externos = red.remotos ?? [];
   const cupo = Math.max(0, (red.max_nodos ?? 12) - estado.trabajadores);
-  $('#pista-red').innerHTML = `El control de latencia simula la red de los <b>${estado.trabajadores} nodos del servidor</b>; los equipos que se suman desde el navegador usan su red real. `
+  if (esRed()) {
+    const lista = meseros();
+    $('#pista-red').innerHTML = (lista.length
+      ? `<b>${lista.length} ${lista.length === 1 ? 'mesero conectado' : 'meseros conectados'}</b>: ${lista.map(escapar).join(', ')}. `
+      : '<b>Todavía no hay meseros.</b> Pidan a sus compañeros que entren como mesero desde esta misma dirección. ')
+      + (estado.caida ? 'Un mesero se apagará sin avisar a mitad de un pedido: el coordinador lo nota al faltar sus <b>latidos</b> (1 s) y reasigna el pedido.' : 'La latencia es la de la red real de cada computador.');
+  } else $('#pista-red').innerHTML = `El control de latencia simula la red de los <b>${estado.trabajadores} nodos del servidor</b>; los equipos que se suman desde el navegador usan su red real. `
     + (estado.caida ? 'Un nodo del servidor se apagará sin avisar: el coordinador lo nota al faltar sus <b>latidos</b> (1 s) y reasigna su solicitud. ' : '')
     + (externos.length
       ? `Se suman <b>${Math.min(externos.length, cupo)}</b> de ${externos.length} nodo(s) externo(s) conectados.`
@@ -83,9 +101,11 @@ function refrescarTextos() {
 function previsualizar() {
   refrescarTextos();
   if (!estado.ocupado) {
-    escena.reconfigurar({ modo: estado.modo, trabajadores: estado.trabajadores,
+    const red = esRed();
+    escena.reconfigurar({ modo: estado.modo, trabajadores: red ? Math.max(1, meseros().length) : estado.trabajadores,
       nucleos: estado.info?.nucleos ?? 4, topologia: estado.info?.topologia,
-      gil: estado.info?.gil ?? true, realista: estado.realista, latencia: estado.latencia / 1000 });
+      gil: estado.info?.gil ?? true, realista: estado.realista, latencia: red ? 0 : estado.latencia / 1000,
+      red, remotos: red ? meseros() : [] });
   }
   pintarComparacion();
 }
@@ -117,19 +137,25 @@ $('#exp-csv').addEventListener('click', () => exportar('csv'));
 
 function bloquear(si) {
   estado.ocupado = si;
-  ['#ejecutar', '#comparar', '#trabajadores', '#duracion', '#realista', '#latencia', '#caida'].forEach((s) => { $(s).disabled = si; });
-  document.querySelectorAll('.segmentos button').forEach((b) => { b.disabled = si; });
+  const no = si || !puedeControlar();
+  ['#ejecutar', '#comparar', '#trabajadores', '#duracion', '#realista', '#latencia', '#caida'].forEach((s) => { $(s).disabled = no; });
+  document.querySelectorAll('.segmentos button').forEach((b) => { b.disabled = no; });
   if (!si) refrescarTextos();
 }
 
 async function ejecutar(modo) {
   const r = await fetch('/api/ejecutar', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sesion': estado.sesion ?? '' },
     body: JSON.stringify({ modo, escenario: estado.escenario,
       trabajadores: estado.trabajadores, duracion: estado.duracion, realista: estado.realista,
       llegadas: estado.llegadas, latencia: estado.latencia, caida: estado.caida }),
   });
   const datos = await r.json();
+  if (r.status === 401 && esRed()) {          // la sesión venció (p. ej. se reinició el servidor)
+    estado.rol = null;
+    try { sessionStorage.removeItem('cafeteria-sesion'); } catch { /* sin almacenamiento */ }
+    mostrarEntrada();
+  }
   if (!r.ok) throw new Error(datos.error || 'No se pudo ejecutar');
   bloquear(true);
   return new Promise((ok, fallo) => { estado.esperando = { ok, fallo }; });
@@ -137,7 +163,7 @@ async function ejecutar(modo) {
 
 async function compararTodos() {
   try {
-    for (const modo of MODOS) {
+    for (const modo of modosActivos()) {
       estado.modo = modo;
       marcar('#modo', modo);
       refrescarTextos();
@@ -177,12 +203,13 @@ function manejar(ev) {
       escena.reconfigurar({ modo: ev.modo, trabajadores: ev.trabajadores, nucleos: ev.nucleos,
         topologia: estado.info?.topologia,
         pid: ev.pid_servidor, gil: estado.info?.gil ?? true, realista: !!ev.realista,
-        latencia: ev.latencia ?? 0, remotos: ev.remotos ?? [] });
+        latencia: ev.latencia ?? 0, remotos: ev.remotos ?? [], red: !!ev.red });
       escena.crearSolicitudes(ev.solicitudes);
       gantt.reiniciar(ev.solicitudes);
       $('#log').innerHTML = '';
       estado.nEventos = 0;
-      const quien = ev.modo === 'secuencial' ? '1 mesero'
+      const quien = ev.red ? `${ev.trabajadores} ${ev.trabajadores === 1 ? 'mesero' : 'meseros'} (computadores)`
+        : ev.modo === 'secuencial' ? '1 mesero'
         : ev.modo === 'distribuido' ? `${ev.trabajadores} nodos · latencia ${ms(ev.latencia ?? 0)}`
         : `${ev.trabajadores} meseros (${ev.modo === 'paralelo' ? 'procesos' : 'hilos'})`;
       $('#estado-escena').innerHTML = `Ejecutando · <b>${NOMBRE_MODO[ev.modo]}</b> · ${NOMBRE_ESC[ev.escenario]} · ${quien}${ev.realista ? ' · tiempo real' : ''}`;
@@ -335,7 +362,7 @@ function pintarComparacion(ref) {
   const tr = ref ? !!ref.realista : estado.realista;
   const lleg = ref ? (ref.llegadas ?? 'juntas') : estado.llegadas;
   $('#comp-titulo').textContent = `${NOMBRE_ESC[esc]} · ${dur.toFixed(1)} s · llegadas ${lleg}${tr ? ' · tiempo real' : ''}`;
-  const filas = MODOS.map((m) => [m, ultimoPor(esc, dur, m, tr, lleg)]);
+  const filas = modosActivos().map((m) => [m, ultimoPor(esc, dur, m, tr, lleg)]);
   const max = Math.max(0.001, ...filas.map(([, r]) => r?.total ?? 0));
   $('#barras').innerHTML = filas.map(([m, r]) => {
     const ancho = r ? Math.max(4, (r.total / max) * 100) : 0;
@@ -421,8 +448,77 @@ function pintarRed() {
   const chip = $('#chip-red');
   if (!chip) return;
   const n = estado.info?.coordinador?.remotos?.length ?? 0;
-  chip.innerHTML = `<b>${n}</b> ${n === 1 ? 'nodo externo' : 'nodos externos'} · Sumar mi equipo`;
+  chip.innerHTML = esRed()
+    ? `<b>${n}</b> ${n === 1 ? 'mesero conectado' : 'meseros conectados'} · Entrar como mesero`
+    : `<b>${n}</b> ${n === 1 ? 'nodo externo' : 'nodos externos'} · Sumar mi equipo`;
+  if (esRed() && !estado.ocupado) previsualizar();
 }
+
+function escapar(texto) {
+  const d = document.createElement('span');
+  d.textContent = texto;
+  return d.innerHTML;
+}
+
+// ------------------------------------------------- roles (versión web)
+function mostrarEntrada() {
+  $('#entrada').hidden = false;
+  $('#nombre-mesero').focus();
+}
+
+function aplicarRol() {
+  const red = esRed();
+  $('#modo [data-v=distribuido]').hidden = red;          // en la web todo es distribuido
+  $('#modo').classList.toggle('cuatro', !red);
+  $('#trabajadores').closest('label').hidden = red;      // los meseros son los computadores
+  $('.ajustes .pista').hidden = red;
+  $('#latencia').closest('label').hidden = red;          // la latencia es la real
+  $('#comparar').textContent = `Comparar los ${modosActivos().length} modelos`;
+  if (red && estado.modo === 'distribuido') { estado.modo = 'paralelo'; marcar('#modo', 'paralelo'); }
+  const rol = $('#chip-rol');
+  if (red) {
+    rol.hidden = false;
+    rol.innerHTML = estado.rol === 'coordinador' ? '<b>coordinador</b>' : 'espectador · <b>entrar</b>';
+  }
+  let aviso = $('#aviso-espectador');
+  if (red && !puedeControlar()) {
+    if (!aviso) {
+      aviso = document.createElement('p');
+      aviso.id = 'aviso-espectador';
+      aviso.className = 'aviso-espectador';
+      aviso.innerHTML = 'Estás mirando. Solo el coordinador lanza las ejecuciones. ¿Quieres participar? <a href="/nodo.html" target="_blank" rel="noopener">Entra como mesero</a>.';
+      $('.acciones').prepend(aviso);
+    }
+  } else aviso?.remove();
+  $('.acciones').querySelectorAll('button').forEach((b) => { b.hidden = red && !puedeControlar(); });
+  bloquear(estado.ocupado);
+  previsualizar();
+}
+
+$('#form-mesero').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const nombre = $('#nombre-mesero').value.trim();
+  if (nombre) location.href = `/nodo.html?nombre=${encodeURIComponent(nombre)}`;
+});
+$('#form-coordinador').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('#entrada-error').textContent = '';
+  const r = await fetch('/api/entrar', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ clave: $('#clave-coordinador').value }) });
+  const datos = await r.json().catch(() => ({}));
+  if (!r.ok) { $('#entrada-error').textContent = datos.error || 'No se pudo entrar'; return; }
+  estado.rol = 'coordinador';
+  estado.sesion = datos.sesion;
+  try { sessionStorage.setItem('cafeteria-sesion', datos.sesion); } catch { /* sin almacenamiento */ }
+  $('#clave-coordinador').value = '';
+  $('#entrada').hidden = true;
+  aplicarRol();
+});
+$('#solo-mirar').addEventListener('click', () => {
+  estado.rol = 'espectador';
+  $('#entrada').hidden = true;
+  aplicarRol();
+});
 
 // ----------------------------------------------------------------- arranque
 async function iniciar() {
@@ -443,7 +539,18 @@ async function iniciar() {
     <span class="chip" title="Global Interpreter Lock">GIL <b>${info.gil ? 'activo' : 'desactivado'}</b></span>
     <span class="chip" title="Linux permite leer en qué núcleo corre cada hilo">núcleo por hilo <b>${info.nucleo_detectable ? 'sí' : 'no'}</b></span>
     <span class="chip">uso de CPU <b>${info.uso_cpu_disponible ? 'real' : 'no disponible'}</b></span>
-    <a class="chip enlace" id="chip-red" href="/nodo.html" target="_blank" rel="noopener" title="Abre esta página en otro equipo o celular para prestarlo como nodo"></a>`);
+    <a class="chip enlace" id="chip-red" href="/nodo.html" target="_blank" rel="noopener" title="Abre esta página en otro equipo o celular para prestarlo como nodo"></a>
+    <button class="chip enlace" id="chip-rol" type="button" hidden></button>`);
+  $('#chip-rol').addEventListener('click', () => { if (estado.rol !== 'coordinador') mostrarEntrada(); });
+  if (info.red) {
+    const pedido = new URLSearchParams(location.search).get('rol');
+    let sesion = null;
+    try { sesion = sessionStorage.getItem('cafeteria-sesion'); } catch { /* sin almacenamiento */ }
+    if (sesion) { estado.rol = 'coordinador'; estado.sesion = sesion; }
+    else if (pedido === 'espectador') estado.rol = 'espectador';
+    else { estado.rol = 'espectador'; mostrarEntrada(); }
+  }
+  aplicarRol();
   pintarRed();
   estado.historial = await (await fetch('/api/historial')).json();
   pintarHistorial();

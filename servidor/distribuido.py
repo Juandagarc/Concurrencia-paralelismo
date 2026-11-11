@@ -52,6 +52,15 @@ PUERTO = 50500
 LATIDO_MAX = 1.0          # segundos sin latido para dar un nodo por caído
 ESPERA_REGISTRO = 20.0    # segundos máximos para que arranque al menos un nodo
 MAX_NODOS = 12            # nodos por ejecución: para 10 solicitudes no hacen falta más
+POLITICAS = ("distribuido", "secuencial", "concurrente", "paralelo")
+# Cómo se coordinan los meseros en la versión web (siempre distribuida):
+#   secuencial  -> anillo con testigo: un solo mesero trabaja a la vez y el
+#                  turno pasa al siguiente (token ring).
+#   concurrente -> todos atienden, pero para calcular hay que tener la única
+#                  llave del sistema (un GIL distribuido): se turnan la CPU y
+#                  solo las esperas se superponen.
+#   paralelo    -> todos atienden y calculan a la vez, cada uno con su CPU.
+#   distribuido -> como paralelo (el modo del laboratorio local).
 MAX_NAVEGADORES = 64      # nodos del navegador conectados a la vez
 TIPOS_NAVEGADOR = {"inicio", "progreso", "etapa", "fin"}
 ETAPAS_VALIDAS = {"pedido", "preparar", "caja_camino", "caja_espera", "caja_cobro", "entrega"}
@@ -140,6 +149,8 @@ class _Ejecucion:
     latencia: float
     etapas: dict | None
     caida: bool
+    politica: str = "distribuido"
+    turno: int = -1                 # secuencial: índice del último mesero que tuvo el testigo
     participantes: dict = field(default_factory=dict)    # id -> Nodo
     pendientes: deque = field(default_factory=deque)
     asignadas: set = field(default_factory=set)
@@ -156,7 +167,8 @@ class Coordinador:
                  clave: str | None = None) -> None:
         self.clave = clave or os.environ.get("LAB_CLAVE") or secrets.token_hex(8)
         self.entrada: queue.Queue = queue.Queue()
-        self.candado = CandadoDistribuido()
+        self.candado = CandadoDistribuido()      # la caja
+        self.llave = CandadoDistribuido()        # el GIL distribuido del modo concurrente
         self.buzones: dict[int, queue.Queue] = {}
         self.nodos: dict[int, Nodo] = {}
         self.cond = threading.Condition()
@@ -304,6 +316,10 @@ class Coordinador:
                     threading.Thread(target=self._prestar_candado, args=(n,), daemon=True).start()
                 elif tipo == "soltar":
                     self.candado.soltar(n.id)
+                elif tipo == "llave":
+                    threading.Thread(target=self._prestar_llave, args=(n,), daemon=True).start()
+                elif tipo == "soltar_llave":
+                    self.llave.soltar(n.id)
         except (OSError, ValueError, UnicodeDecodeError):
             pass                      # se cerró o mandó basura: el detector de fallos decide
         finally:
@@ -322,9 +338,9 @@ class Coordinador:
                 canal.enviar_json({"tipo": "lleno", "mensaje": "Ya hay demasiados equipos conectados"})
                 return None
             nid = next(self._ids)
-            nombre = f"{persona}·{hilo}"
+            nombre = persona if hilo == 1 else f"{persona}·{hilo}"
             if any(x.nombre == nombre and x.vivo for x in self.nodos.values()):
-                nombre = f"{persona}·{hilo}#{nid}"
+                nombre = f"{nombre} #{nid}"
             n = Nodo(nid, nombre, {
                 "host": persona, "pid": f"web-{nid}", "hilo": hilo,
                 "nucleos": int(min(max(_num(msg.get("nucleos"), 1), 1), 256)),
@@ -336,6 +352,11 @@ class Coordinador:
         canal.enviar_json({"tipo": "bienvenido", "id": nid, "nombre": nombre})
         self._avisar()
         return n
+
+    def _prestar_llave(self, n: Nodo) -> None:
+        if self.llave.tomar(n.id):
+            if not n.canal.enviar_json({"tipo": "llave_ok"}):
+                self.llave.soltar(n.id)
 
     def _prestar_candado(self, n: Nodo) -> None:
         if self.candado.tomar(n.id):
@@ -374,13 +395,17 @@ class Coordinador:
     def ejecutar(self, orden: list[dict], recibir: Callable[[dict], None], t0: float,
                  emitir: Callable[[dict], None], locales: int,
                  etapas: dict | None = None, latencia: float = 0.0,
-                 caida: bool = False, remotos: list[Nodo] | None = None) -> None:
+                 caida: bool = False, remotos: list[Nodo] | None = None,
+                 politica: str = "distribuido") -> None:
         """Reparte `orden` entre los nodos y bloquea hasta que las atienden todas.
 
         recibir(s) espera la hora de llegada del cliente y registra su llegada.
+        politica: cómo se coordinan los nodos (ver POLITICAS).
         """
+        if politica not in POLITICAS:
+            raise ValueError(f"Política desconocida: {politica}")
         ej = _Ejecucion(next(self._ejecuciones), t0, emitir, latencia, etapas,
-                        caida and locales >= 2)
+                        caida and locales + len(remotos or []) >= 2, politica)
         with self.cond:
             self._ej = ej
             for k, n in enumerate(remotos or []):
@@ -451,19 +476,33 @@ class Coordinador:
                    "desfase": n.info.get("desfase"), "latencia": n.info["latencia"]})
 
     def _repartir(self, ej: _Ejecucion) -> None:
-        """Balanceo de carga: cada solicitud va al nodo libre que menos ha atendido."""
-        libres = sorted((n for n in ej.participantes.values() if n.vivo and n.tarea is None),
-                        key=lambda n: (n.atendidas, n.idx))
+        """Balanceo de carga: cada solicitud va al nodo libre que menos ha atendido.
+
+        En secuencial hay un testigo (token ring): solo se asigna cuando nadie
+        trabaja, y el turno pasa al siguiente mesero del anillo.
+        """
+        vivos = [n for n in ej.participantes.values() if n.vivo]
+        if ej.politica == "secuencial":
+            if any(n.tarea for n in vivos) or not vivos:
+                return
+            anillo = sorted(vivos, key=lambda n: n.idx)
+            siguiente = next((n for n in anillo if n.idx > ej.turno), anillo[0])
+            libres = [siguiente]
+        else:
+            libres = sorted((n for n in vivos if n.tarea is None),
+                            key=lambda n: (n.atendidas, n.idx))
         while libres and ej.pendientes:
             n, s = libres.pop(0), ej.pendientes.popleft()
+            ej.turno = n.idx
             n.tarea = s
             reintento = s["id"] in ej.asignadas
             ej.asignadas.add(s["id"])
             self._enviar(n, {"tipo": "solicitud", "solicitud": s, "t0": ej.t0,
                              "etapas": ej.etapas, "ej": ej.id, "nodo_idx": n.idx,
+                             "modo": ej.politica,
                              "latencia": n.info.get("latencia", 0.0)})
             ej.emitir({"tipo": "asignada", "id": s["id"], "t": ej.t(), "nodo": n.nombre,
-                       "nodo_idx": n.idx, "reintento": reintento,
+                       "nodo_idx": n.idx, "reintento": reintento, "politica": ej.politica,
                        "latencia": n.info.get("latencia", 0.0)})
 
     def _enviar(self, n: Nodo, msg: dict) -> None:
@@ -480,6 +519,7 @@ class Coordinador:
             if n.vivo and ahora - n.ultimo > LATIDO_MAX:
                 n.vivo = False
                 self.candado.revocar(n.id)
+                self.llave.revocar(n.id)
                 tarea, n.tarea = n.tarea, None
                 if tarea and tarea["id"] not in ej.hechas:
                     ej.pendientes.appendleft(tarea)       # se reasigna primero
@@ -518,16 +558,18 @@ class Coordinador:
                     n.atendidas += 1
                     ej.hechas.add(ev["id"])
                     self.cond.notify_all()
-                elif (ej.caida and n.local and ev["tipo"] == "progreso"
-                      and ev["progreso"] >= 0.4
+                elif (ej.caida and ev["tipo"] == "progreso" and ev["progreso"] >= 0.4
                       and sum(x.vivo for x in ej.participantes.values()) >= 2):
                     ej.caida = False                  # se simula una sola caída
-                    matar = (n, ej.procesos.get(n.idx))
+                    matar = n
             ej.emitir(ev)
-            if matar and matar[1]:
-                matar[1].kill()                       # el nodo se apaga sin avisar
-                ej.emitir({"tipo": "falla", "t": ej.t(), "nodo": matar[0].nombre,
-                           "nodo_idx": matar[0].idx, "id": ev["id"]})
+            if matar:
+                if matar.navegador:                   # el navegador deja de latir y responder
+                    matar.canal.enviar_json({"tipo": "caer"})
+                elif ej.procesos.get(matar.idx):
+                    ej.procesos[matar.idx].kill()     # el proceso se apaga sin avisar
+                ej.emitir({"tipo": "falla", "t": ej.t(), "nodo": matar.nombre,
+                           "nodo_idx": matar.idx, "id": ev["id"]})
 
 
 def _num(valor, defecto: float = 0.0) -> float:

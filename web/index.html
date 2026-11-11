@@ -161,6 +161,32 @@
     </section>
   </footer>
 
+  <div class="entrada" id="entrada" hidden>
+    <div class="entrada-caja" role="dialog" aria-labelledby="entrada-titulo">
+      <p class="eyebrow">Grupo 1 · Sistemas Distribuidos</p>
+      <h2 id="entrada-titulo">Cafetería distribuida</h2>
+      <p class="entrada-intro">Cada computador que entra es un mesero que atiende con su propia CPU. El coordinador decide cómo se organizan: uno a la vez, turnándose la CPU o todos a la vez.</p>
+      <div class="entrada-opciones">
+        <form class="opcion" id="form-mesero">
+          <h3>Entrar como mesero</h3>
+          <p>Tu computador atiende pedidos reales. Tu mesero será tan rápido como tu CPU.</p>
+          <label for="nombre-mesero">Tu nombre</label>
+          <input type="text" id="nombre-mesero" maxlength="18" autocomplete="nickname" placeholder="Ana" required>
+          <button class="primario" type="submit">Ser mesero</button>
+        </form>
+        <form class="opcion" id="form-coordinador">
+          <h3>Entrar como coordinador</h3>
+          <p>Dirige la exposición: elige el modelo y lanza las ejecuciones.</p>
+          <label for="clave-coordinador">Contraseña</label>
+          <input type="password" id="clave-coordinador" autocomplete="current-password" required>
+          <button class="secundario" type="submit">Coordinar</button>
+          <p class="entrada-error" id="entrada-error" role="alert"></p>
+        </form>
+      </div>
+      <button class="solo-mirar" id="solo-mirar" type="button">Solo mirar la cafetería</button>
+    </div>
+  </div>
+
   <script type="module" src="app.js"></script>
 </body>
 </html>

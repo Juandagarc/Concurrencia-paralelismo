@@ -217,3 +217,147 @@ def test_navegador_que_se_cae_se_reasigna(url_ws):
     finally:
         vivo.clear()
         c.cerrar()
+
+
+# ------------------------------------- versión web: siempre distribuida (red)
+import queue as _queue  # noqa: E402
+
+
+class MeseroFalso:
+    """Imita un computador que entra como mesero (web/nodo-trabajador.js)."""
+
+    def __init__(self, url, nombre, tramos=None, caer_al_pedirlo=True):
+        self.c = ws.conectar(url)
+        self.vivo = threading.Event()
+        self.vivo.set()
+        self.entrantes: _queue.Queue = _queue.Queue()
+        self.llaves: _queue.Queue = _queue.Queue()
+        self.tramos = tramos            # lista compartida: (inicio, fin) de cada cálculo con la llave
+        self.caer_al_pedirlo = caer_al_pedirlo
+        self.c.enviar_json({"tipo": "hora", "c": time.time()})
+        self.c.recibir_json()
+        self.c.enviar_json({"tipo": "hola", "nombre": nombre, "hilo": 1, "rtt": 0, "ajuste": 0})
+        self.nombre = self.c.recibir_json()["nombre"]
+        for f in (self._leer, self._latir, self._trabajar):
+            threading.Thread(target=f, daemon=True).start()
+
+    def _leer(self):
+        try:
+            while self.vivo.is_set():
+                m = self.c.recibir_json()
+                if m["tipo"] == "llave_ok":
+                    self.llaves.put(m)
+                elif m["tipo"] == "caer" and self.caer_al_pedirlo:
+                    self.vivo.clear()       # deja de latir y de trabajar sin avisar
+                else:
+                    self.entrantes.put(m)
+        except (OSError, ValueError):
+            pass
+
+    def _latir(self):
+        while self.vivo.is_set():
+            self.c.enviar_json({"tipo": "latido"})
+            time.sleep(0.2)
+
+    def _trabajar(self):
+        while self.vivo.is_set():
+            try:
+                m = self.entrantes.get(timeout=0.1)
+            except _queue.Empty:
+                continue
+            if m.get("tipo") != "solicitud":
+                continue
+            s, t0 = m["solicitud"], m["t0"]
+
+            def ev(tipo, **x):
+                self.c.enviar_json({"tipo": "evento",
+                                    "ev": {"tipo": tipo, "id": s["id"], "t": time.time() - t0, **x}})
+            ev("inicio")
+            for paso in range(1, 6):
+                if not self.vivo.is_set():
+                    return
+                gil = m.get("modo") == "concurrente" and s["trabajo"] == "cpu"
+                if gil:
+                    self.c.enviar_json({"tipo": "llave"})
+                    self.llaves.get(timeout=10)
+                a = time.time()
+                time.sleep(s["duracion"] / 5)
+                if gil:
+                    self.tramos.append((a, time.time()))
+                    self.c.enviar_json({"tipo": "soltar_llave"})
+                ev("progreso", progreso=paso / 5)
+            if self.vivo.is_set():
+                ev("fin")
+
+    def cerrar(self):
+        self.vivo.clear()
+        self.c.cerrar()
+
+
+@pytest.fixture
+def meseros(url_ws):
+    creados = []
+
+    def crear(n, **kw):
+        for i in range(n):
+            creados.append(MeseroFalso(url_ws, f"M{i + 1}", **kw))
+        esperar_externos(len(creados))
+        return creados
+
+    yield crear
+    for m in creados:
+        m.cerrar()
+    for _ in range(40):                     # que el coordinador los dé de baja
+        if not distribuido.obtener().remotos():
+            break
+        time.sleep(0.05)
+
+
+def test_red_sin_meseros_no_ejecuta():
+    with pytest.raises(RuntimeError, match="No hay meseros"):
+        motor.ejecutar("paralelo", generar("io", 0.05, OPS), red=True)
+
+
+def test_red_secuencial_pasa_el_testigo_en_anillo(meseros):
+    ms_ = meseros(3)
+    r = motor.ejecutar("secuencial", generar("io", 0.05, OPS), red=True)
+    ev = r["eventos"]
+    inicio = {e["id"]: e["t"] for e in ev if e["tipo"] == "inicio"}
+    fin = {e["id"]: e["t"] for e in ev if e["tipo"] == "fin"}
+    tramos = sorted((inicio[i], fin[i]) for i in fin)
+    assert len(tramos) == 10
+    assert all(b[0] >= a[1] - 5e-3 for a, b in zip(tramos, tramos[1:]))   # nunca dos a la vez
+    turnos = [e["nodo"] for e in ev if e["tipo"] == "asignada"]
+    nombres = [m.nombre for m in ms_]
+    assert turnos[:6] == nombres + nombres                                # el testigo rota
+
+
+def test_red_concurrente_turna_la_cpu_con_la_llave(meseros):
+    tramos = []
+    meseros(3, tramos=tramos)
+    r = motor.ejecutar("concurrente", generar("cpu", 0.1, OPS), red=True)
+    assert len({e["nodo"] for e in r["eventos"] if e["tipo"] == "inicio"}) == 3   # todos atienden
+    tramos.sort()
+    assert len(tramos) == 50                                                      # 10 pedidos × 5 tramos
+    assert all(b[0] >= a[1] - 5e-3 for a, b in zip(tramos, tramos[1:]))           # pero calculan de a uno
+
+
+def test_red_paralelo_reparte_y_tolera_la_caida(meseros):
+    meseros(3)
+    r = motor.ejecutar("paralelo", generar("io", 0.3, OPS), red=True, caida=True)
+    ev = r["eventos"]
+    caidos = [e for e in ev if e["tipo"] == "nodo_caido"]
+    assert len(caidos) == 1
+    fines = [e for e in ev if e["tipo"] == "fin"]
+    assert sorted(e["id"] for e in fines) == list(range(1, 11))
+    assert all(e["nodo"] != caidos[0]["nodo"] for e in fines)
+
+
+def test_solo_el_coordinador_con_contrasena_ejecuta():
+    from servidor.web import Laboratorio
+    lab = Laboratorio(red=True, clave="clave-de-prueba")
+    assert not lab.autorizado(None) and not lab.autorizado("inventada")
+    assert lab.entrar("otra") is None
+    sesion = lab.entrar("clave-de-prueba")
+    assert sesion and lab.autorizado(sesion)
+    assert Laboratorio(red=False).autorizado(None)        # el laboratorio local no pide clave

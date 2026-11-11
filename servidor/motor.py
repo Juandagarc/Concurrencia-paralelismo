@@ -135,7 +135,7 @@ def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
              al_evento: Callable[[dict], None] | None = None,
              muestrear_cpu: bool = False, realista: bool = False,
              etapas: dict | None = None, latencia: float = 0.03,
-             caida: bool = False) -> dict:
+             caida: bool = False, red: bool = False) -> dict:
     """Atiende `solicitudes` con el modelo `modo` y devuelve el resumen.
 
     al_evento: se llama en el proceso principal con cada evento real, en orden
@@ -146,17 +146,28 @@ def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
     latencia:  (distribuido) segundos que tarda un mensaje en llegar a un nodo.
     caida:     (distribuido) apaga un nodo a mitad de una solicitud para mostrar
                cómo el coordinador detecta la falla y reasigna el trabajo.
+    red:       versión web, siempre distribuida: atienden los meseros conectados
+               (un navegador por computador) y `modo` decide cómo se coordinan
+               (testigo en secuencial, GIL distribuido en concurrente, libre en
+               paralelo). Ver distribuido.POLITICAS.
     """
     if modo not in MODOS:
         raise ValueError(f"Modo desconocido: {modo}")
-    if modo == "secuencial":
+    if modo == "secuencial" and not red:
         trabajadores = 1
 
     eventos: list[dict] = []
     gestor = None
     coordinador = remotos = None
     locales = trabajadores
-    if modo == "distribuido":
+    if red:
+        # Versión web: los meseros son los computadores conectados, nada más.
+        coordinador = distribuido.obtener()
+        remotos = coordinador.remotos()
+        if not remotos:
+            raise RuntimeError("No hay meseros conectados: entren como mesero desde la página de inicio")
+        locales, trabajadores = 0, len(remotos)
+    elif modo == "distribuido":
         # Los nodos de otros computadores que ya están conectados se suman a
         # los nodos locales que se lanzan para esta ejecución.
         coordinador = distribuido.obtener()
@@ -195,7 +206,7 @@ def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
         "nucleos": os.cpu_count(), "solicitudes": solicitudes,
         "realista": realista, "etapas": etapas,
         **({"coordinador": coordinador.direccion_red(), "remotos": [n.nombre for n in remotos],
-            "latencia": latencia} if coordinador else {}),
+            "latencia": 0.0 if red else latencia, "red": red} if coordinador else {}),
     })
 
     def recibir(s: dict) -> None:
@@ -216,7 +227,10 @@ def ejecutar(modo: str, solicitudes: list[dict], trabajadores: int = 4,
         muestreador.start()
 
     try:
-        if modo == "secuencial":
+        if red:
+            coordinador.ejecutar(orden, recibir, t0, cola.put, 0, etapas=etapas,
+                                 caida=caida, remotos=remotos, politica=modo)
+        elif modo == "secuencial":
             # Un hilo "recepcionista" anota las llegadas; el único trabajador
             # (este hilo) atiende la fila en orden, una solicitud tras otra.
             fila: queue.Queue = queue.Queue()

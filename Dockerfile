@@ -17,5 +17,7 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/info', timeout=4)"
 
+# --red: siempre distribuido, con meseros del navegador. La contraseña del
+# coordinador va en la variable de entorno COORDINADOR_CLAVE (en Coolify).
 # El puerto del coordinador (50500, pickle con clave) queda solo dentro del contenedor
-CMD ["python", "-m", "servidor", "--host", "0.0.0.0", "--puerto", "8000"]
+CMD ["python", "-m", "servidor", "--host", "0.0.0.0", "--puerto", "8000", "--red"]

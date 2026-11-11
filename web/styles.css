@@ -93,7 +93,7 @@ input[type=range] { width: 100%; accent-color: var(--acento); margin-top: 6px; }
 input[type=range]:disabled { opacity: 0.4; }
 
 .acciones { display: grid; gap: 8px; }
-.acciones button, .exportar button, .vista {
+.acciones button, .exportar button, .vista, .opcion button {
   font: inherit; cursor: pointer; border-radius: 10px; padding: 10px; border: 1px solid var(--linea);
 }
 .primario { background: var(--acento); color: #04212a; font-weight: 700; border-color: transparent; }
@@ -255,3 +255,27 @@ button:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
 .chip.enlace:hover { background: rgba(167,139,250,.12); }
 .chip.enlace b { color: var(--tinta); }
 .red .pista a { color: var(--dis); }
+
+/* ------------------------------------------- entrada (versión web) */
+.entrada { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; overflow-y: auto;
+  padding: 24px max(16px, env(safe-area-inset-right)) 24px max(16px, env(safe-area-inset-left));
+  background: rgba(4, 7, 12, .82); backdrop-filter: blur(6px); }
+.entrada-caja { width: min(760px, 100%); background: var(--panel); border: 1px solid var(--linea); border-radius: 16px;
+  padding: 28px; display: grid; gap: 16px; }
+.entrada .eyebrow { font: 600 12px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--dis); margin: 0; }
+.entrada h2 { font-size: 26px; text-transform: none; letter-spacing: -0.01em; color: var(--tinta); margin: 0; }
+.entrada-intro { margin: 0; color: var(--tinta-suave); }
+.entrada-opciones { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.opcion { background: var(--panel-2); border: 1px solid var(--linea); border-radius: 12px; padding: 18px; display: grid; gap: 8px; align-content: start; }
+.opcion h3 { margin: 0; font-size: 16px; }
+.opcion p { margin: 0; font-size: 13px; color: var(--tinta-suave); }
+.opcion label { font-size: 12px; color: var(--tinta-suave); margin-top: 6px; }
+.opcion input { background: var(--fondo); border: 1px solid var(--linea); color: var(--tinta); border-radius: 8px; padding: 9px 11px; font: inherit; }
+.opcion input:focus-visible { outline: 2px solid var(--dis); outline-offset: 1px; }
+.entrada-error { color: #f87171 !important; min-height: 1em; }
+.solo-mirar { all: unset; cursor: pointer; justify-self: center; font-size: 13px; color: var(--tinta-suave); text-decoration: underline; }
+.solo-mirar:focus-visible { outline: 2px solid var(--dis); }
+.rol-chip { color: var(--dis); }
+.entrada[hidden], .chip[hidden], .segmentos button[hidden], .acciones button[hidden], .ajustes [hidden], .red [hidden] { display: none !important; }
+.aviso-espectador { font-size: 12.5px; color: var(--tinta-suave); background: var(--panel-2); border: 1px dashed var(--linea);
+  border-radius: 10px; padding: 10px 12px; margin: 0; }

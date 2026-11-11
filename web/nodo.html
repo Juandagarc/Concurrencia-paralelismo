@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sumar mi equipo · Cafetería distribuida</title>
+  <title>Entrar como mesero · Cafetería distribuida</title>
   <style>
     :root {
       --fondo: #070b12; --panel: #0d1420; --panel-2: #121b2b; --linea: #1f2b3f;
@@ -22,7 +22,7 @@
     .suave { color: var(--tinta-suave); }
     a { color: var(--dis); }
     .panel { background: var(--panel); border: 1px solid var(--linea); border-radius: 12px; padding: 18px; }
-    form { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; gap: 16px; align-items: end; }
+    form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: end; }
     label { display: grid; gap: 6px; font-size: 13px; color: var(--tinta-suave); }
     input[type=text] { background: var(--fondo); border: 1px solid var(--linea); color: var(--tinta);
       border-radius: 8px; padding: 9px 11px; font: inherit; }
@@ -37,7 +37,8 @@
     .resumen { display: flex; flex-wrap: wrap; gap: 10px; }
     .chip { font: 12px var(--mono); border: 1px solid var(--linea); border-radius: 999px; padding: 4px 10px; color: var(--tinta-suave); }
     .chip b { color: var(--tinta); }
-    .nodos { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+    .nodos { display: grid; grid-template-columns: minmax(0, 520px); gap: 14px; }
+    .velocidad { font: 600 13px var(--mono); color: var(--dis); }
     .nodo { background: var(--panel); border: 1px solid var(--linea); border-radius: 12px; padding: 14px;
       display: grid; gap: 8px; min-width: 0; }
     .nodo.atendiendo { border-color: var(--dis); }
@@ -60,33 +61,23 @@
 <body>
 <main>
   <header>
-    <p class="eyebrow">Cafetería distribuida · nodo voluntario</p>
-    <h1>Presta tu equipo como mesero</h1>
+    <p class="eyebrow">Cafetería distribuida · entrar como mesero</p>
+    <h1>Tu computador es un mesero</h1>
   </header>
-  <p class="suave">Tu navegador se conecta al coordinador de la cafetería y atiende solicitudes reales con los núcleos de tu CPU: cada trabajador es un nodo independiente (un Web Worker) con su propia conexión, su propio reloj corregido y sus propios latidos. No hay que instalar nada. Deja esta pestaña abierta y mira la cafetería en <a href="/" target="_blank" rel="noopener">la página principal</a>: tus meseros aparecen en la siguiente ejecución en modo <b>Distribuido</b>.</p>
+  <p class="suave">Tu navegador se conecta al coordinador y tu mesero atiende pedidos reales con <b>la CPU de este equipo</b>: cada pedido de cafetera es una cantidad fija de cálculo, así que un computador rápido lo sirve antes y uno lento después. Tiene su propia conexión, su propio reloj (corregido con el algoritmo de Cristian) y envía latidos cada 0,25 s. No hay que instalar nada: deja esta pestaña abierta y mira tu mesero en <a href="/?rol=espectador" target="_blank" rel="noopener">la cafetería</a>.</p>
 
   <form class="panel" id="formulario">
-    <label for="nombre">Tu nombre (se verá en la cafetería)
-      <input type="text" id="nombre" maxlength="18" autocomplete="nickname" placeholder="Ana">
+    <label for="nombre">Tu nombre (así se llamará tu mesero)
+      <input type="text" id="nombre" maxlength="18" autocomplete="nickname" placeholder="Ana" required>
     </label>
-    <label for="cuantos">Trabajadores (núcleos que prestas) <output id="v-cuantos">2</output>
-      <input type="range" id="cuantos" min="1" max="4" value="2">
-    </label>
-    <button type="submit" id="unirme">Unirme</button>
+    <button type="submit" id="unirme">Entrar como mesero</button>
   </form>
 
-  <div class="resumen" id="resumen" hidden>
-    <span class="chip">conectados <b id="r-vivos">0</b></span>
-    <span class="chip">solicitudes atendidas <b id="r-atendidas">0</b></span>
-    <span class="chip">tu equipo tiene <b id="r-nucleos">—</b> núcleos lógicos</span>
-    <button class="sec" id="salir" type="button">Salir</button>
-  </div>
-
   <section class="nodos" id="nodos">
-    <p class="vacio">Todavía no te has unido. Cada trabajador ocupa un núcleo solo mientras atiende una solicitud de CPU.</p>
+    <p class="vacio">Escribe tu nombre y entra. Tu mesero solo usa la CPU mientras prepara un pedido de cafetera.</p>
   </section>
 
-  <p class="suave">Para probar la tolerancia a fallos, pulsa <b>Apagar sin avisar</b> mientras un trabajador atiende: el Worker se detiene de golpe, el coordinador nota que faltan sus latidos y le da la solicitud a otro nodo.</p>
+  <p class="suave">Para probar la tolerancia a fallos, pulsa <b>Apagar sin avisar</b> mientras tu mesero atiende, o cierra la pestaña: el coordinador notará que faltan tus latidos y le dará tu pedido a otro mesero.</p>
 </main>
 <script src="nodo.js"></script>
 </body>

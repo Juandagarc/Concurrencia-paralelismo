@@ -9,11 +9,13 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import mimetypes
 import os
 import platform
 import queue
+import secrets
 import threading
 import time
 from datetime import datetime
@@ -29,6 +31,11 @@ RAIZ = Path(__file__).resolve().parent.parent
 WEB = RAIZ / "web"
 EJECUCIONES = RAIZ / "resultados" / "ejecuciones"
 MAX_GUARDADAS = 300        # en un servidor público no se llena el disco
+# Versión web: trabajo de CPU fijo, medido en iteraciones del mismo cálculo en
+# JavaScript. A 15 millones por segundo (un portátil promedio) un pedido de 1 s
+# tarda 1 s; un computador más rápido lo termina antes y un celular, después.
+REFERENCIA_JS = 15_000_000
+MODOS_RED = ("secuencial", "concurrente", "paralelo")
 
 mimetypes.add_type("text/javascript", ".js")
 
@@ -36,7 +43,10 @@ mimetypes.add_type("text/javascript", ".js")
 class Laboratorio:
     """Estado compartido: clientes conectados, ejecución en curso e historial."""
 
-    def __init__(self) -> None:
+    def __init__(self, red: bool = False, clave: str | None = None) -> None:
+        self.red = red
+        self.clave = clave            # contraseña del coordinador (solo en la versión web)
+        self.sesiones: set[str] = set()
         self.ops_por_seg = calibrar()
         self.clientes: list[queue.Queue] = []
         self.lock = threading.Lock()
@@ -83,12 +93,27 @@ class Laboratorio:
             "ocupado": self.ocupado.locked(),
             "etapas": motor.ETAPAS,
             "coordinador": distribuido.obtener().info(),
+            "red": self.red,
+            "referencia_js": REFERENCIA_JS,
         }
+
+    # --- coordinador (versión web) ---------------------------------------
+    def entrar(self, clave: str) -> str | None:
+        if not self.clave or not hmac.compare_digest(str(clave).encode(), self.clave.encode()):
+            time.sleep(1.0)           # frena a quien intente adivinar
+            return None
+        sesion = secrets.token_urlsafe(24)
+        self.sesiones.add(sesion)
+        return sesion
+
+    def autorizado(self, sesion: str | None) -> bool:
+        return not self.red or (sesion is not None and sesion in self.sesiones)
 
     def lanzar(self, params: dict) -> dict:
         modo = params.get("modo", "secuencial")
         escenario = params.get("escenario", "io")
-        if modo not in motor.MODOS or escenario not in ESCENARIOS:
+        modos = MODOS_RED if self.red else motor.MODOS
+        if modo not in modos or escenario not in ESCENARIOS:
             raise ValueError("Modo o escenario no válido")
         trabajadores = max(1, min(int(params.get("trabajadores", 4)), 8))
         duracion = max(0.1, min(float(params.get("duracion", 1.0)), 5.0))
@@ -113,7 +138,8 @@ class Laboratorio:
     def _correr(self, modo: str, escenario: str, trabajadores: int, duracion: float,
                 realista: bool, llegadas: str, latencia: float, caida: bool) -> None:
         try:
-            lote = generar(escenario, duracion, self.ops_por_seg, llegadas=llegadas)
+            ops = REFERENCIA_JS if self.red else self.ops_por_seg
+            lote = generar(escenario, duracion, ops, llegadas=llegadas)
 
             def al_evento(ev: dict) -> None:
                 if ev["tipo"] == "ejecucion_inicio":
@@ -122,7 +148,7 @@ class Laboratorio:
 
             r = motor.ejecutar(modo, lote, trabajadores, al_evento=al_evento,
                                muestrear_cpu=True, realista=realista,
-                               latencia=latencia, caida=caida)
+                               latencia=latencia, caida=caida, red=self.red)
             eventos = r.pop("eventos")
             r |= {"escenario": escenario, "duracion": duracion, "llegadas": llegadas,
                   "fecha": datetime.now().isoformat(timespec="seconds")}
@@ -179,11 +205,21 @@ def crear_manejador(lab: Laboratorio):
             return self._estatico(ruta)
 
         def do_POST(self):
-            if self.path != "/api/ejecutar":
+            if self.path not in ("/api/ejecutar", "/api/entrar"):
                 return self._json({"error": "No encontrado"}, HTTPStatus.NOT_FOUND)
             try:
-                largo = int(self.headers.get("Content-Length", 0))
+                largo = min(int(self.headers.get("Content-Length", 0)), 16_384)
                 params = json.loads(self.rfile.read(largo) or b"{}")
+                if not isinstance(params, dict):
+                    raise ValueError("Se esperaba un objeto JSON")
+                if self.path == "/api/entrar":
+                    sesion = lab.entrar(params.get("clave", ""))
+                    if sesion is None:
+                        return self._json({"error": "Contraseña incorrecta"}, HTTPStatus.UNAUTHORIZED)
+                    return self._json({"sesion": sesion})
+                if not lab.autorizado(self.headers.get("X-Sesion")):
+                    return self._json({"error": "Solo el coordinador puede ejecutar"},
+                                      HTTPStatus.UNAUTHORIZED)
                 return self._json(lab.lanzar(params), HTTPStatus.ACCEPTED)
             except RuntimeError as e:
                 return self._json({"error": str(e)}, HTTPStatus.CONFLICT)
@@ -245,13 +281,20 @@ def _abrir(host: str, puerto: int, manejador, intentos: int = 20):
                      "Prueba con:  python -m servidor --puerto 5050")
 
 
-def iniciar(host: str = "127.0.0.1", puerto: int = 8000, nodos_lan: bool = False) -> None:
+def iniciar(host: str = "127.0.0.1", puerto: int = 8000, nodos_lan: bool = False,
+            red: bool = False) -> None:
     print("Calibrando la CPU de este equipo…", flush=True)
     # El puerto TCP del coordinador (pickle con clave) solo escucha en este equipo,
     # salvo que se pida --nodos-lan para sumar nodos de Python de la red local.
     # Los navegadores entran siempre por el WebSocket de la web, que es seguro.
     coordinador = distribuido.obtener("0.0.0.0" if nodos_lan else "127.0.0.1")
-    lab = Laboratorio()
+    clave = None
+    if red:
+        # La contraseña nunca va en el repositorio (es público): se lee del entorno
+        clave = os.environ.get("COORDINADOR_CLAVE") or secrets.token_urlsafe(9)
+        if not os.environ.get("COORDINADOR_CLAVE"):
+            print(f"  COORDINADOR_CLAVE no está definida: contraseña temporal {clave}")
+    lab = Laboratorio(red, clave)
     coordinador.al_cambio = lambda info: lab.difundir({"tipo": "red", **info})
     servidor, puerto = _abrir(host, puerto, crear_manejador(lab))
     servidor.daemon_threads = True

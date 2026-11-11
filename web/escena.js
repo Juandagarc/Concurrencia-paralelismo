@@ -460,7 +460,7 @@ export class Escena {
       sub = 'se usa en modo tiempo real';
       color = '#64748b';
     } else if (this.cajaDueno) {
-      sub = `${this.modo === 'distribuido' ? 'el coordinador se lo prestó a' : 'Lock ocupado por'} ${this.cajaDueno.nombre}`;
+      sub = `${this.modo === 'distribuido' || this.red ? 'el coordinador se lo prestó a' : 'Lock ocupado por'} ${this.cajaDueno.nombre}`;
       color = '#ef4444';
     } else {
       sub = 'Lock libre';
@@ -470,7 +470,7 @@ export class Escena {
     if (this.realista && n) sub += ` · ${n} en fila`;
     matCandado.color.set(color);
     matCandado.emissive.set(color);
-    const titulo = this.modo === 'distribuido' ? 'Caja · Lock distribuido' : 'Caja · sección crítica';
+    const titulo = this.modo === 'distribuido' || this.red ? 'Caja · Lock distribuido' : 'Caja · sección crítica';
     lbl.element.innerHTML = `${titulo}<small>${sub}</small>`;
   }
 
@@ -485,21 +485,23 @@ export class Escena {
   // -------------------------------------------------------- reconfigurar
   /** Arma el personal según el modelo: cuántos meseros, procesos y llaves. */
   reconfigurar({ modo, trabajadores, nucleos, topologia, pid, gil = true, realista = false,
-    latencia = 0, remotos = [] }) {
+    latencia = 0, remotos = [], red = false }) {
     this._vaciar(this.personal);
     this.meseros = [];
     this.llaves = [];
     this.modo = modo;
     this.latencia = latencia;
     this.rack = null;
-    // En paralelo y distribuido cada mesero tiene su propia memoria y su propio GIL
-    const propio = modo === 'paralelo' || modo === 'distribuido';
-    const distribuido = modo === 'distribuido';
+    // En paralelo y distribuido cada mesero tiene su propia memoria y su propio GIL.
+    // En la versión web (red) cada mesero es un computador: siempre distribuido.
+    this.red = red;
+    const propio = modo === 'paralelo' || modo === 'distribuido' || red;
+    const distribuido = modo === 'distribuido' || red;
     this.realista = realista;
     this.colaCaja = [];
     this.cajaDueno = null;
     this._lblCaja();
-    const n = modo === 'secuencial' ? 1 : Math.max(1, trabajadores);
+    const n = modo === 'secuencial' && !red ? 1 : Math.max(1, trabajadores);
     this.compacto = n > 8;
     const esp = Math.min(2.2, ANCHO_PERSONAL / n);
     const xs = Array.from({ length: n }, (_, i) => (i - (n - 1) / 2) * esp);
@@ -587,11 +589,16 @@ export class Escena {
     });
     if (distribuido) this._construirCoordinador(xs, zMat);
 
-    if (gil) {
-      pizarras.forEach((pos) => {
+    // Web: en secuencial la llave es el testigo del anillo y en concurrente el GIL
+    // distribuido; las dos son únicas y descansan en el coordinador.
+    const llaveUnica = red && modo !== 'paralelo' && this.rack;
+    const lugares = llaveUnica ? [this.rack.cima.clone().add(new THREE.Vector3(0.9, 0, 0))] : pizarras;
+    const nombreLlave = red && modo === 'secuencial' ? 'testigo' : 'GIL';
+    if (gil || llaveUnica) {
+      lugares.forEach((pos) => {
         const mesh = new THREE.Mesh(G.llave, M.oro);
         mesh.position.copy(pos);
-        const lbl = etiqueta('GIL', 'lbl lbl-gil', 0, 0.5);
+        const lbl = etiqueta(nombreLlave, 'lbl lbl-gil', 0, 0.5);
         lbl.position.set(0.22, 0, 0);
         mesh.add(lbl);
         this.personal.add(mesh);
@@ -757,6 +764,7 @@ export class Escena {
   }
 
   // --------------------------------------------------------------- eventos
+  _testigo() { return this.red && this.modo === 'secuencial'; }
   _llaveDe(m) { return this.llaves[this.modo === 'paralelo' || this.modo === 'distribuido' ? m.idx : 0]; }
   _tomarLlave(m) { const l = this._llaveDe(m); if (l) l.dueno = m; }
   _soltarLlave(m) { const l = this._llaveDe(m); if (l && l.dueno === m) l.dueno = null; }
@@ -868,7 +876,8 @@ export class Escena {
     if (!m || !c) return;
     Object.assign(m, { nombre: ev.trabajador, solicitud: ev.id, tipo: ev.trabajo,
       nucleo: ev.nucleo, progreso: 0, regresarEn: null, etapa: null });
-    if (ev.trabajo === 'cpu') this._tomarLlave(m); else this._soltarLlave(m);
+    if (this._testigo()) this._tomarLlave(m);      // secuencial web: el testigo es de quien atiende
+    else if (ev.trabajo === 'cpu') this._tomarLlave(m); else this._soltarLlave(m);
     this._lblMesero(m);
 
     c.estado = 'atendida';
@@ -934,7 +943,7 @@ export class Escena {
     const c = this.clientes.get(ev.id);
     if (!m || !c) return;
     m.etapa = ev.etapa;
-    if (ev.etapa !== 'preparar') this._soltarLlave(m);   // dormir o esperar libera el GIL
+    if (ev.etapa !== 'preparar' && !this._testigo()) this._soltarLlave(m);   // dormir o esperar libera el GIL
     switch (ev.etapa) {
       case 'pedido': {
         const junto = this._junto(c);
