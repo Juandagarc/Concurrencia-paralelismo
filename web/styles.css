@@ -136,6 +136,8 @@ button:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
 .lbl-mesero b { font: 600 11px var(--mono); }
 .lbl-mesero small, .lbl-cliente small, .lbl-cafetera small { display: block; font-size: 10.5px; color: var(--tinta-suave); }
 .lbl-cliente { font-size: 11px; }
+.lbl-cliente.mini { padding: 0 4px; font-size: 9.5px; }
+.lbl-cliente.mini em { font-size: 9px; }
 .lbl-cliente b { color: var(--tinta); }
 .lbl-cliente em { display: block; font-style: normal; font: 10.5px var(--mono); color: #cbd5e1; }
 .lbl-cliente.servida { border-color: rgba(52, 211, 153, 0.6); }
@@ -276,6 +278,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
 .solo-mirar { all: unset; cursor: pointer; justify-self: center; font-size: 13px; color: var(--tinta-suave); text-decoration: underline; }
 .solo-mirar:focus-visible { outline: 2px solid var(--dis); }
 .rol-chip { color: var(--dis); }
+.acciones .detener { color: #fca5a5; border-color: rgba(248,113,113,.45); }
 .entrada[hidden], .chip[hidden], .segmentos button[hidden], .acciones button[hidden], .ajustes [hidden], .red [hidden] { display: none !important; }
 .aviso-espectador { font-size: 12.5px; color: var(--tinta-suave); background: var(--panel-2); border: 1px dashed var(--linea);
   border-radius: 10px; padding: 10px 12px; margin: 0; }

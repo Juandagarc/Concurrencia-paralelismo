@@ -39,7 +39,7 @@ const PISTA = {
 
 const estado = {
   modo: 'secuencial', escenario: 'io', trabajadores: 4, duracion: 1, realista: true,
-  llegadas: 'escalonadas', llegaron: 0, latencia: 30, caida: false, rol: null, sesion: null,
+  llegadas: 'escalonadas', llegaron: 0, latencia: 30, caida: false, rol: null, sesion: null, mesas: 10,
   info: null, ocupado: false, t0: 0, corriendo: false,
   carriles: new Map(), listas: 0, activas: new Set(), solicitudes: [],
   eventos: [], ultimaEjecucion: null, historial: [], esperando: null, nEventos: 0,
@@ -75,6 +75,7 @@ function refrescarTextos() {
   // mueve, la página pasa a concurrente (ver el manejador de 'input').
   $('#v-trab').textContent = estado.modo === 'secuencial' ? '1 (secuencial)' : estado.trabajadores;
   $('#v-dur').textContent = `${estado.duracion.toFixed(1)} s`;
+  $('#v-mesas').textContent = estado.mesas;
   $('#realista').checked = estado.realista;
   $('#sec-red').hidden = !esRed() && estado.modo !== 'distribuido';
   $('#v-lat').textContent = `${estado.latencia} ms`;
@@ -107,6 +108,7 @@ function previsualizar() {
       gil: estado.info?.gil ?? true, realista: estado.realista, latencia: red ? 0 : estado.latencia / 1000,
       red, remotos: red ? meseros() : [] });
   }
+  escena.mesas(estado.mesas);
   pintarComparacion();
 }
 
@@ -128,9 +130,17 @@ $('#realista').addEventListener('change', (e) => {
 });
 $('#latencia').addEventListener('input', (e) => { estado.latencia = +e.target.value; refrescarTextos(); });
 $('#caida').addEventListener('change', (e) => { estado.caida = e.target.checked; refrescarTextos(); });
+$('#mesas').addEventListener('input', (e) => { estado.mesas = +e.target.value; previsualizar(); });
 $('#duracion').addEventListener('input', (e) => { estado.duracion = +e.target.value; refrescarTextos(); pintarComparacion(); });
 $('#ejecutar').addEventListener('click', () => ejecutar(estado.modo).catch(avisar));
 $('#comparar').addEventListener('click', compararTodos);
+$('#detener').addEventListener('click', async () => {
+  $('#detener').disabled = true;
+  estado.detenida = true;                  // que "Comparar" no siga con el siguiente modelo
+  try {
+    await fetch('/api/detener', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sesion': estado.sesion ?? '' }, body: '{}' });
+  } catch { $('#detener').disabled = false; }
+});
 $('#vista').addEventListener('click', () => escena.vistaInicial());
 $('#exp-json').addEventListener('click', () => exportar('json'));
 $('#exp-csv').addEventListener('click', () => exportar('csv'));
@@ -138,8 +148,10 @@ $('#exp-csv').addEventListener('click', () => exportar('csv'));
 function bloquear(si) {
   estado.ocupado = si;
   const no = si || !puedeControlar();
-  ['#ejecutar', '#comparar', '#trabajadores', '#duracion', '#realista', '#latencia', '#caida'].forEach((s) => { $(s).disabled = no; });
+  ['#ejecutar', '#comparar', '#trabajadores', '#duracion', '#mesas', '#realista', '#latencia', '#caida'].forEach((s) => { $(s).disabled = no; });
   document.querySelectorAll('.segmentos button').forEach((b) => { b.disabled = no; });
+  $('#detener').hidden = !(si && puedeControlar());
+  $('#detener').disabled = false;
   if (!si) refrescarTextos();
 }
 
@@ -148,7 +160,7 @@ async function ejecutar(modo) {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sesion': estado.sesion ?? '' },
     body: JSON.stringify({ modo, escenario: estado.escenario,
       trabajadores: estado.trabajadores, duracion: estado.duracion, realista: estado.realista,
-      llegadas: estado.llegadas, latencia: estado.latencia, caida: estado.caida }),
+      llegadas: estado.llegadas, latencia: estado.latencia, caida: estado.caida, mesas: estado.mesas }),
   });
   const datos = await r.json();
   if (r.status === 401 && esRed()) {          // la sesión venció (p. ej. se reinició el servidor)
@@ -162,8 +174,10 @@ async function ejecutar(modo) {
 }
 
 async function compararTodos() {
+  estado.detenida = false;
   try {
     for (const modo of modosActivos()) {
+      if (estado.detenida) break;
       estado.modo = modo;
       marcar('#modo', modo);
       refrescarTextos();
@@ -197,6 +211,7 @@ function manejar(ev) {
         solicitudes: ev.solicitudes, eventos: [], carriles: new Map(), activas: new Set() });
       estado.modo = ev.modo; estado.escenario = ev.escenario; estado.realista = !!ev.realista;
       estado.llegadas = ev.llegadas ?? 'juntas';
+      if (ev.mesas) { estado.mesas = ev.mesas; $('#mesas').value = ev.mesas; }
       marcar('#llegadas', estado.llegadas);
       marcar('#modo', ev.modo); marcar('#escenario', ev.escenario);
       if (!estado.ocupado) bloquear(true);   // otra pestaña lanzó la ejecución
@@ -339,10 +354,10 @@ function registrar(ev) {
 
 // ----------------------------------------------------- comparación e historial
 // Solo se comparan ejecuciones con la misma carga, duración y modo (tiempo real o no)
-const clave = (r) => `${r.escenario}|${(+r.duracion).toFixed(1)}|${r.realista ? 'TR' : 'puro'}|${r.llegadas ?? 'juntas'}`;
+const clave = (r) => `${r.escenario}|${(+r.duracion).toFixed(1)}|${r.realista ? 'TR' : 'puro'}|${r.llegadas ?? 'juntas'}|${r.mesas ?? 10}`;
 
-function ultimoPor(escenario, duracion, modo, realista, llegadas) {
-  const buscada = clave({ escenario, duracion, realista, llegadas });
+function ultimoPor(escenario, duracion, modo, realista, llegadas, mesas) {
+  const buscada = clave({ escenario, duracion, realista, llegadas, mesas });
   for (let i = estado.historial.length - 1; i >= 0; i--) {
     const r = estado.historial[i];
     if (r.modo === modo && clave(r) === buscada) return r;
@@ -369,8 +384,9 @@ function pintarComparacion(ref) {
   const dur = ref ? +ref.duracion : estado.duracion;
   const tr = ref ? !!ref.realista : estado.realista;
   const lleg = ref ? (ref.llegadas ?? 'juntas') : estado.llegadas;
-  $('#comp-titulo').textContent = `${NOMBRE_ESC[esc]} · ${dur.toFixed(1)} s · llegadas ${lleg}${tr ? ' · tiempo real' : ''}`;
-  const filas = modosActivos().map((m) => [m, ultimoPor(esc, dur, m, tr, lleg)]);
+  $('#comp-titulo').textContent = `${NOMBRE_ESC[esc]} · ${dur.toFixed(1)} s · ${ref ? (ref.mesas ?? 10) : estado.mesas} mesas · llegadas ${lleg}${tr ? ' · tiempo real' : ''}`;
+  const mes = ref ? (ref.mesas ?? 10) : estado.mesas;
+  const filas = modosActivos().map((m) => [m, ultimoPor(esc, dur, m, tr, lleg, mes)]);
   const max = Math.max(0.001, ...filas.map(([, r]) => r?.total ?? 0));
   $('#barras').innerHTML = filas.map(([m, r]) => {
     const ancho = r ? Math.max(4, (r.total / max) * 100) : 0;
@@ -392,8 +408,9 @@ function conclusion(esc, r, tr) {
 
 function conclusionLocal(esc, x, c, p, tr) {
   if (tr) {
-    const cobros = 10 * (estado.info?.etapas?.cobro ?? 0.3);
-    return `Tiempo real: hilos ${x(c)}, procesos ${x(p)}. Tomar pedidos y entregar se superpone entre meseros, pero la caja es una sola: los 10 cobros van en fila (≥ ${cobros.toFixed(1)} s) por más meseros que haya. Esa parte secuencial limita la aceleración (ley de Amdahl).`;
+    const nm = estado.solicitudes.length || estado.mesas;
+    const cobros = nm * (estado.info?.etapas?.cobro ?? 0.3);
+    return `Tiempo real: hilos ${x(c)}, procesos ${x(p)}. Tomar pedidos y entregar se superpone entre meseros, pero la caja es una sola: los ${nm} cobros van en fila (≥ ${cobros.toFixed(1)} s) por más meseros que haya. Esa parte secuencial limita la aceleración (ley de Amdahl).`;
   }
   if (esc === 'io') return `Con E/S los hilos aceleran ${x(c)} y los procesos ${x(p)}: mientras una solicitud espera, otra avanza. Los hilos lo logran sin el costo de crear procesos.`;
   if (esc === 'cpu') return `Con cálculo los hilos aceleran ${x(c)} (el GIL los turna) y los procesos ${x(p)}: solo el paralelismo real usa varios núcleos a la vez.`;
@@ -498,7 +515,7 @@ function aplicarRol() {
       $('.acciones').prepend(aviso);
     }
   } else aviso?.remove();
-  $('.acciones').querySelectorAll('button').forEach((b) => { b.hidden = red && !puedeControlar(); });
+  ['#ejecutar', '#comparar'].forEach((s) => { $(s).hidden = red && !puedeControlar(); });
   bloquear(estado.ocupado);
   previsualizar();
 }

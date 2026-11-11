@@ -49,10 +49,12 @@ from typing import Callable
 
 RAIZ = Path(__file__).resolve().parent.parent
 PUERTO = 50500
-LATIDO_MAX = 1.0          # segundos sin latido para dar un nodo por caído
+LATIDO_MAX = 2.5          # segundos sin latido para dar un nodo por caído. Con margen:
+                          # un navegador en segundo plano puede atrasar algunos latidos
 ESPERA_REGISTRO = 20.0    # segundos máximos para que arranque al menos un nodo
 GRACIA = 30.0             # si caen todos los nodos, cuánto se espera a que alguno vuelva
-MAX_NODOS = 12            # nodos por ejecución: para 10 solicitudes no hacen falta más
+SIN_AVANCE = 45.0         # si nadie avanza en este tiempo, la ejecución se cancela sola
+MAX_NODOS = 30            # nodos (meseros) por ejecución
 POLITICAS = ("distribuido", "secuencial", "concurrente", "paralelo")
 # Cómo se coordinan los meseros en la versión web (siempre distribuida):
 #   secuencial  -> anillo con testigo: un solo mesero trabaja a la vez y el
@@ -81,12 +83,14 @@ class CandadoDistribuido:
         self._c = threading.Condition()
         self.dueno: int | None = None
         self.fila: list[int] = []
+        self.epoca = 0                # cambia en cada reinicio: las esperas viejas se anulan
 
     def tomar(self, nodo_id: int) -> bool:
         with self._c:
+            epoca = self.epoca
             self.fila.append(nodo_id)
             while not (self.dueno is None and self.fila and self.fila[0] == nodo_id):
-                if nodo_id not in self.fila:      # revocado: el nodo se dio por caído
+                if nodo_id not in self.fila or self.epoca != epoca:   # revocado o reiniciado
                     return False
                 self._c.wait()
             self.fila.pop(0)
@@ -98,6 +102,13 @@ class CandadoDistribuido:
             if self.dueno == nodo_id:
                 self.dueno = None
                 self._c.notify_all()
+
+    def reiniciar(self) -> None:
+        """Entre ejecuciones: nadie conserva el candado ni su lugar en la fila."""
+        with self._c:
+            self.dueno, self.fila = None, []
+            self.epoca += 1
+            self._c.notify_all()
 
     def revocar(self, nodo_id: int) -> None:
         """Si un nodo cae con el candado o en la fila, se lo quita para no bloquear a todos."""
@@ -159,6 +170,8 @@ class _Ejecucion:
     procesos: dict = field(default_factory=dict)         # índice local -> Popen
     activa: bool = True
     sin_vivos: float | None = None    # desde cuándo no queda ningún nodo vivo
+    ultimo_avance: float = 0.0        # última vez que un nodo informó algo
+    detener: bool = False             # el coordinador pidió detenerla
 
     def t(self) -> float:
         return round(time.time() - self.t0, 4)
@@ -257,6 +270,32 @@ class Coordinador:
             if n:
                 n.ultimo = time.time()
 
+    def _latido_navegador(self, n: Nodo) -> None:
+        """Latido de un navegador. Si se le había dado por caído, era una falsa
+        alarma (latidos atrasados, no un equipo apagado): se le readmite."""
+        with self.cond:
+            n.ultimo = time.time()
+            if n.vivo:
+                return
+            n.vivo, n.tarea = True, None
+            self.nodos[n.id] = n          # pudo haberse borrado al terminar la ejecución
+            ej = self._ej
+            en_curso = False
+            if ej and ej.activa and n.id in ej.participantes:
+                ocupado = any(p.vivo and p.idx == n.idx and p.id != n.id
+                              for p in ej.participantes.values())
+                if ocupado:                # otro tomó su puesto: entra en la siguiente
+                    del ej.participantes[n.id]
+                else:
+                    en_curso = True
+                    self._alta(ej, n, vuelve=True)
+                    self.cond.notify_all()
+            elif ej and ej.activa:
+                en_curso = self._incorporar(n, None)
+        # Su pedido ya se le dio a otro: que lo abandone para no trabajar en vano
+        n.canal.enviar_json({"tipo": "cancelar", "en_ejecucion": en_curso})
+        self._avisar()
+
     # ---------------------------------------------------------- consultas
     def remotos(self, maximo: int = MAX_NODOS) -> list[Nodo]:
         """Nodos externos (navegadores u otros computadores) conectados y vivos.
@@ -311,7 +350,7 @@ class Coordinador:
                 elif n is None:
                     continue
                 elif tipo == "latido":
-                    self._latido(n.id)
+                    self._latido_navegador(n)
                 elif tipo == "evento":
                     self._evento_navegador(n, msg.get("ev"))
                 elif tipo == "tomar":
@@ -420,8 +459,15 @@ class Coordinador:
             raise ValueError(f"Política desconocida: {politica}")
         ej = _Ejecucion(next(self._ejecuciones), t0, emitir, latencia, etapas,
                         caida and locales + len(remotos or []) >= 2, politica)
+        ej.ultimo_avance = time.time()
+        # Pizarra limpia: ni candados ni trabajos viejos de una ejecución anterior
+        self.candado.reiniciar()
+        self.llave.reiniciar()
         with self.cond:
             self._ej = ej
+            for n in self.nodos.values():
+                if n.navegador and n.vivo:
+                    n.canal.enviar_json({"tipo": "reiniciar"})
             for k, n in enumerate(remotos or []):
                 n.idx, n.tarea = locales + k, None
                 ej.participantes[n.id] = n
@@ -445,6 +491,11 @@ class Coordinador:
         try:
             with self.cond:
                 while len(ej.hechas) < len(orden):
+                    if ej.detener:
+                        raise RuntimeError("El coordinador detuvo la ejecución")
+                    if time.time() - ej.ultimo_avance > SIN_AVANCE:
+                        raise RuntimeError(f"Nadie avanzó en {SIN_AVANCE:.0f} s: la ejecución se canceló "
+                                           "para no bloquear la cafetería")
                     self._vigilar(ej)
                     self._repartir(ej)
                     self._comprobar(ej)
@@ -456,6 +507,10 @@ class Coordinador:
                 for n in ej.participantes.values():
                     if n.local:
                         self.buzones[n.id].put({"cerrar": True})
+                    elif n.navegador and n.vivo and len(ej.hechas) < len(orden):
+                        n.canal.enviar_json({"tipo": "reiniciar"})   # se cortó: que suelten lo que hacían
+            self.candado.reiniciar()
+            self.llave.reiniciar()
             for proc in ej.procesos.values():
                 try:
                     proc.wait(timeout=3)
@@ -470,6 +525,15 @@ class Coordinador:
                     else:
                         n.tarea = None
             self._avisar()
+
+    def detener(self) -> bool:
+        """Lo pide el coordinador desde la web: corta la ejecución en curso."""
+        with self.cond:
+            if self._ej is None:
+                return False
+            self._ej.detener = True
+            self.cond.notify_all()
+            return True
 
     def _lanzar(self, indice: int, ej_id: int) -> subprocess.Popen:
         """Arranca un nodo local: otro programa de Python, sin memoria compartida."""
@@ -549,6 +613,7 @@ class Coordinador:
             n, s = libres.pop(0), ej.pendientes.popleft()
             ej.turno = n.idx
             n.tarea = s
+            ej.ultimo_avance = time.time()
             reintento = s["id"] in ej.asignadas
             ej.asignadas.add(s["id"])
             self._enviar(n, {"tipo": "solicitud", "solicitud": s, "t0": ej.t0,
@@ -605,6 +670,7 @@ class Coordinador:
                 # es suya: se descarta para que nadie reciba dos respuestas.
                 if n is None or not n.vivo or n.tarea is None or n.tarea["id"] != ev["id"]:
                     continue
+                ej.ultimo_avance = time.time()
                 if ev["tipo"] == "fin":
                     n.tarea = None
                     n.atendidas += 1

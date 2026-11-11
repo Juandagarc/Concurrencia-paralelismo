@@ -21,8 +21,22 @@ $('#formulario').addEventListener('submit', (e) => { e.preventDefault(); entrar(
 
 const ms = (s) => `${s >= 0 ? '+' : ''}${(s * 1000).toFixed(s && Math.abs(s) < 0.01 ? 2 : 0)} ms`;
 
+// Que el navegador no congele ni duerma la pestaña mientras se es mesero:
+// un Web Lock retenido evita que Chrome la congele en segundo plano y el
+// Wake Lock evita que la pantalla se apague (en celulares).
+let candadoWeb = false;
+async function mantenerDespierto() {
+  if (!candadoWeb && navigator.locks) {
+    candadoWeb = true;
+    navigator.locks.request(`cafeteria-mesero-${identidad}`, () => new Promise(() => {})).catch(() => {});
+  }
+  try { await navigator.wakeLock?.request('screen'); } catch { /* no disponible: se sigue igual */ }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && actual?.vivo) mantenerDespierto(); });
+
 function entrar() {
   const nombre = $('#nombre').value.trim() || 'Invitado';
+  mantenerDespierto();
   try { localStorage.setItem('cafeteria-nombre', nombre); } catch { /* sin almacenamiento */ }
   if (actual?.vivo) apagar(actual, 'reemplazado');
   $('#nodos').innerHTML = '';
@@ -75,15 +89,21 @@ function entrar() {
       w.atendidas++;
       q('.d-at').textContent = w.atendidas;
       estado('esperando pedidos');
+    } else if (d.estado === 'libre') {
+      estado('esperando pedidos');
+      q('.barra i').style.width = '0%';
+    } else if (d.estado === 'reconectando') {
+      estado(`se cortó la conexión · reintentando (${d.intentos})`, 'caido');
+    } else if (d.estado === 'readmitido') {
+      estado(d.enEjecucion ? 'el coordinador te readmitió' : 'readmitido · entras en la siguiente', '');
+      q('.d-sol').textContent = 'tus latidos se atrasaron y otro tomó tu pedido';
+      q('.barra i').style.width = '0%';
     } else if (d.estado === 'caido') {
       w.vivo = false;
       estado('el coordinador simuló tu caída', 'caido');
       q('.peligro').disabled = true;
     } else if (d.estado === 'rechazado') {
       estado(d.mensaje, 'caido');
-    } else if (d.estado === 'desconectado' || d.estado === 'error') {
-      if (w.vivo) estado('sin conexión', 'caido');
-      w.vivo = false;
     }
   };
   q('.peligro').addEventListener('click', () => apagar(w, 'apagado sin avisar'));

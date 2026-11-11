@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import distribuido, motor, ws
-from .solicitudes import ESCENARIOS, LLEGADAS, generar
+from .solicitudes import ESCENARIOS, LLEGADAS, MAX_MESAS, generar
 from .trabajo import calibrar, nucleo_actual
 
 RAIZ = Path(__file__).resolve().parent.parent
@@ -95,6 +95,7 @@ class Laboratorio:
             "coordinador": distribuido.obtener().info(),
             "red": self.red,
             "referencia_js": REFERENCIA_JS,
+            "max_mesas": MAX_MESAS,
         }
 
     # --- coordinador (versión web) ---------------------------------------
@@ -120,6 +121,7 @@ class Laboratorio:
         realista = bool(params.get("realista", False))
         latencia = max(0.0, min(float(params.get("latencia", 30)), 300.0)) / 1000
         caida = bool(params.get("caida", False))
+        mesas = max(1, min(int(params.get("mesas", 10)), MAX_MESAS))
         llegadas = params.get("llegadas", "juntas")
         if llegadas not in LLEGADAS:
             raise ValueError("Tipo de llegada no válido")
@@ -127,30 +129,32 @@ class Laboratorio:
             raise RuntimeError("Ya hay una ejecución en curso")
         hilo = threading.Thread(
             target=self._correr,
-            args=(modo, escenario, trabajadores, duracion, realista, llegadas, latencia, caida),
+            args=(modo, escenario, trabajadores, duracion, realista, llegadas, latencia, caida, mesas),
             # En modo secuencial este hilo es el único que atiende solicitudes
             name="Hilo principal", daemon=True)
         hilo.start()
         return {"modo": modo, "escenario": escenario, "trabajadores": trabajadores,
                 "duracion": duracion, "realista": realista, "llegadas": llegadas,
-                "latencia": latencia, "caida": caida}
+                "latencia": latencia, "caida": caida, "mesas": mesas}
 
     def _correr(self, modo: str, escenario: str, trabajadores: int, duracion: float,
-                realista: bool, llegadas: str, latencia: float, caida: bool) -> None:
+                realista: bool, llegadas: str, latencia: float, caida: bool,
+                mesas: int = 10) -> None:
         try:
             ops = REFERENCIA_JS if self.red else self.ops_por_seg
-            lote = generar(escenario, duracion, ops, llegadas=llegadas)
+            lote = generar(escenario, duracion, ops, n=mesas, llegadas=llegadas)
 
             def al_evento(ev: dict) -> None:
                 if ev["tipo"] == "ejecucion_inicio":
-                    ev = ev | {"escenario": escenario, "duracion": duracion, "llegadas": llegadas}
+                    ev = ev | {"escenario": escenario, "duracion": duracion, "llegadas": llegadas,
+                               "mesas": mesas}
                 self.difundir(ev)
 
             r = motor.ejecutar(modo, lote, trabajadores, al_evento=al_evento,
                                muestrear_cpu=True, realista=realista,
                                latencia=latencia, caida=caida, red=self.red)
             eventos = r.pop("eventos")
-            r |= {"escenario": escenario, "duracion": duracion, "llegadas": llegadas,
+            r |= {"escenario": escenario, "duracion": duracion, "llegadas": llegadas, "mesas": mesas,
                   "fecha": datetime.now().isoformat(timespec="seconds")}
             self.historial.append(r)
             self.difundir({"tipo": "resumen", **r})
@@ -205,7 +209,7 @@ def crear_manejador(lab: Laboratorio):
             return self._estatico(ruta)
 
         def do_POST(self):
-            if self.path not in ("/api/ejecutar", "/api/entrar"):
+            if self.path not in ("/api/ejecutar", "/api/entrar", "/api/detener"):
                 return self._json({"error": "No encontrado"}, HTTPStatus.NOT_FOUND)
             try:
                 largo = min(int(self.headers.get("Content-Length", 0)), 16_384)
@@ -220,6 +224,8 @@ def crear_manejador(lab: Laboratorio):
                 if not lab.autorizado(self.headers.get("X-Sesion")):
                     return self._json({"error": "Solo el coordinador puede ejecutar"},
                                       HTTPStatus.UNAUTHORIZED)
+                if self.path == "/api/detener":
+                    return self._json({"detenida": distribuido.obtener().detener()})
                 return self._json(lab.lanzar(params), HTTPStatus.ACCEPTED)
             except RuntimeError as e:
                 return self._json({"error": str(e)}, HTTPStatus.CONFLICT)

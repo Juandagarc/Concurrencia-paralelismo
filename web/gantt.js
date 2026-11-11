@@ -65,17 +65,23 @@ export class Gantt {
       ctx.fillText(`${+t.toFixed(2)} s`, x, 13);
     }
 
+    // Con muchas mesas las filas son finas: se rotula solo cada tantas
+    const cadaCuanto = Math.ceil(12 / Math.max(1, alto));
     this.filas.forEach((f, i) => {
       const y = arriba + i * alto;
       const yc = y + alto / 2;
-      const bh = Math.max(4, alto * 0.62);
-      ctx.textAlign = 'left';
-      ctx.fillStyle = tinta;
-      ctx.font = '600 11.5px system-ui, sans-serif';
-      ctx.fillText(`#${f.s.id}`, 8, yc + 4);
-      ctx.fillStyle = suave;
-      ctx.font = '11px system-ui, sans-serif';
-      ctx.fillText(`${f.s.usuario} · ${f.s.trabajo === 'io' ? 'E/S' : 'CPU'}`, 30, yc + 4);
+      const bh = alto >= 7 ? Math.max(4, alto * 0.62) : Math.max(1, alto * 0.8);
+      if (i % cadaCuanto === 0) {
+        ctx.textAlign = 'left';
+        ctx.fillStyle = tinta;
+        ctx.font = `600 ${Math.min(11.5, Math.max(9, alto))}px system-ui, sans-serif`;
+        ctx.fillText(`#${f.s.id}`, 8, yc + 4);
+        if (alto >= 10) {
+          ctx.fillStyle = suave;
+          ctx.font = '11px system-ui, sans-serif';
+          ctx.fillText(`${f.s.usuario} · ${f.s.trabajo === 'io' ? 'E/S' : 'CPU'}`, 30, yc + 4);
+        }
+      }
 
       // Gris = en cola: desde que el cliente llega hasta que lo atienden
       if (f.llegada != null) {
@@ -83,7 +89,7 @@ export class Gantt {
         ctx.fillStyle = 'rgba(148,163,184,0.22)';
         ctx.fillRect(X(f.llegada), yc - bh / 2, Math.max(0, X(finCola) - X(f.llegada)), bh);
         ctx.fillStyle = suave;
-        ctx.fillRect(X(f.llegada) - 1, yc - bh / 2 - 2, 2, bh + 4);     // marca de llegada
+        if (alto >= 7) ctx.fillRect(X(f.llegada) - 1, yc - bh / 2 - 2, 2, bh + 4);     // marca de llegada
       }
       if (f.inicio != null) {
         const color = PALETA[f.carril % PALETA.length];
@@ -105,7 +111,7 @@ export class Gantt {
         }
         ctx.globalAlpha = 1;
         ctx.strokeStyle = 'rgba(7,11,18,0.55)';
-        for (const m of f.marcas) {
+        for (const m of alto >= 7 ? f.marcas : []) {
           const x = X(m);
           ctx.beginPath(); ctx.moveTo(x, yc - bh / 2); ctx.lineTo(x, yc + bh / 2); ctx.stroke();
         }

@@ -7,7 +7,10 @@ import random
 USUARIOS = [
     "Ana", "Bruno", "Carla", "Diego", "Elena",
     "Felipe", "Gabriela", "Hugo", "Isabel", "Julián",
+    "Karen", "Luis", "Mariana", "Nicolás", "Olga",
+    "Pablo", "Quique", "Rosa", "Santiago", "Tatiana",
 ]
+MAX_MESAS = 100
 
 # Menú de la cafetería: cada producto tarda distinto (factor sobre la duración elegida).
 # Las bebidas se preparan en la máquina (carga de CPU); la comida se espera en la
@@ -49,7 +52,9 @@ def generar(escenario: str, duracion: float, ops_por_seg: int, n: int = 10,
     factores = []
     for i in range(n):
         if llegadas == "escalonadas" and i > 0:
-            t += min(1.5, max(0.1, azar.expovariate(1 / SEPARACION_MEDIA)))
+            # Con muchas mesas los clientes llegan más seguido: siempre unos 6 s de llegadas
+            media = SEPARACION_MEDIA * min(1.0, 10 / n)
+            t += min(1.5, max(0.02, azar.expovariate(1 / media)))
         if escenario == "mixto":
             trabajo = "io" if i % 2 == 0 else "cpu"
         else:
@@ -58,7 +63,8 @@ def generar(escenario: str, duracion: float, ops_por_seg: int, n: int = 10,
         factores.append(base * azar.uniform(1 - VARIACION, 1 + VARIACION))
         lote.append({
             "id": i + 1,
-            "usuario": USUARIOS[i % len(USUARIOS)],
+            "usuario": USUARIOS[i % len(USUARIOS)]
+                       + (f" {i // len(USUARIOS) + 1}" if i >= len(USUARIOS) else ""),
             "producto": producto,
             "trabajo": trabajo,
             "llegada": round(t, 3),

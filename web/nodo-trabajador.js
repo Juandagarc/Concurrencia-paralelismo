@@ -33,7 +33,11 @@ let pendienteHora = null;
 const avisar = (estado, extra = {}) => postMessage({ estado, ...extra });
 const dormir = (s) => new Promise((r) => setTimeout(r, s * 1000));
 class Caido extends Error {}
-const vivo = () => { if (caido) throw new Caido(); };
+let cancelada = false;        // el coordinador reasignó el pedido en curso
+const vivo = () => { if (caido || cancelada) throw new Caido(); };
+// Pausa breve sin temporizadores: Chrome atrasa los setTimeout de las pestañas en
+// segundo plano, pero no los mensajes. Así el cálculo no se frena al cambiar de pestaña.
+const ceder = () => new Promise((r) => { const c = new MessageChannel(); c.port1.onmessage = r; c.port2.postMessage(0); });
 const enviar = (m) => { if (ws?.readyState === 1) ws.send(JSON.stringify(m)); };
 
 function quemar(n) {            // el mismo cálculo que hace el servidor en Python
@@ -56,11 +60,16 @@ function calibrar() {
 async function calcular(n) {
   let falta = n;
   const tramo = Math.max(10_000, opsPorSeg * 0.04);
+  let ultimoLatido = performance.now();
   while (falta > 0) {
     vivo();
+    if (performance.now() - ultimoLatido > LATIDO_MS) {   // latido extra mientras calcula
+      enviar({ tipo: 'latido' });
+      ultimoLatido = performance.now();
+    }
     quemar(Math.min(tramo, falta));
     falta -= tramo;
-    await dormir(0);              // deja pasar los latidos
+    await ceder();                // deja pasar los latidos
   }
 }
 
@@ -127,47 +136,77 @@ onmessage = async ({ data }) => {
   if (data.orden !== 'iniciar') return;
   avisar('calibrando');
   opsPorSeg = calibrar();
-  ws = new WebSocket(data.url);
-  let latidos = null;
   const cola = [];               // las solicitudes se atienden de a una, en orden
   let ocupado = false;
+  let latidos = null;
+  let intentos = 0;
   const siguiente = async () => {
     if (ocupado || !cola.length) return;
     ocupado = true;
+    cancelada = false;
     try { await atender(cola.shift()); } catch (e) { if (!(e instanceof Caido)) throw e; } finally { ocupado = false; siguiente(); }
   };
+  /** Abandona lo que esté haciendo (pedido reasignado o ejecución terminada). */
+  const soltarTodo = () => {
+    if (ocupado) cancelada = true;
+    cola.length = 0;
+    esperandoLlave?.(); esperandoCandado?.();
+    esperandoLlave = esperandoCandado = null;
+  };
 
-  ws.onopen = async () => {
-    avisar('sincronizando');
-    let mejor = null;
-    for (let i = 0; i < 5; i++) {
-      const r = await pedirHora();
-      if (!mejor || r.rtt < mejor.rtt) mejor = r;
-    }
-    ({ ajuste, rtt } = mejor);
-    enviar({ tipo: 'hola', nombre: data.nombre, hilo: data.hilo, identidad: data.identidad,
-      nucleos: data.nucleos, rtt, ajuste });
-    latidos = setInterval(() => enviar({ tipo: 'latido' }), LATIDO_MS);
-  };
-  ws.onmessage = (e) => {
-    const m = JSON.parse(e.data);
-    if (m.tipo === 'hora') { pendienteHora?.(m); pendienteHora = null; }
-    else if (m.tipo === 'bienvenido') avisar('conectado', { id: m.id, nombre: m.nombre, ajuste, rtt, opsPorSeg, enEjecucion: m.en_ejecucion });
-    if (caido) return;
-    else if (m.tipo === 'solicitud') { cola.push(m); siguiente(); }
-    else if (m.tipo === 'candado') { esperandoCandado?.(); esperandoCandado = null; }
-    else if (m.tipo === 'llave_ok') { esperandoLlave?.(); esperandoLlave = null; }
-    else if (m.tipo === 'caer') {
-      // Simulacro pedido por el coordinador: el equipo "se desenchufa". No se
-      // despide: deja de latir y de responder, y el coordinador debe notarlo solo.
-      caido = true;
+  const conectar = () => {
+    ws = new WebSocket(data.url);
+    ws.onopen = async () => {
+      intentos = 0;
+      avisar('sincronizando');
+      let mejor = null;
+      for (let i = 0; i < 5; i++) {
+        const r = await pedirHora();
+        if (!mejor || r.rtt < mejor.rtt) mejor = r;
+      }
+      ({ ajuste, rtt } = mejor);
+      // Con la misma identidad: si era una reconexión, el coordinador lo reconoce
+      enviar({ tipo: 'hola', nombre: data.nombre, hilo: data.hilo, identidad: data.identidad,
+        nucleos: data.nucleos, rtt, ajuste });
       clearInterval(latidos);
-      cola.length = 0;
-      avisar('caido');
-      setTimeout(() => ws.close(), 1500);
-    }
-    else if (m.tipo === 'lleno') avisar('rechazado', { mensaje: m.mensaje });
+      latidos = setInterval(() => enviar({ tipo: 'latido' }), LATIDO_MS);
+    };
+    ws.onmessage = (e) => {
+      const m = JSON.parse(e.data);
+      if (m.tipo === 'hora') { pendienteHora?.(m); pendienteHora = null; return; }
+      if (m.tipo === 'bienvenido') {
+        avisar('conectado', { id: m.id, nombre: m.nombre, ajuste, rtt, opsPorSeg, enEjecucion: m.en_ejecucion });
+        return;
+      }
+      if (caido) return;
+      if (m.tipo === 'solicitud') { cola.push(m); siguiente(); }
+      else if (m.tipo === 'candado') { esperandoCandado?.(); esperandoCandado = null; }
+      else if (m.tipo === 'llave_ok') { esperandoLlave?.(); esperandoLlave = null; }
+      else if (m.tipo === 'reiniciar') { soltarTodo(); avisar('libre'); }
+      else if (m.tipo === 'cancelar') {
+        // Falsa alarma: el coordinador nos dio por caídos (latidos atrasados) y ya
+        // le dio nuestro pedido a otro. Lo abandonamos y seguimos disponibles.
+        soltarTodo();
+        avisar('readmitido', { enEjecucion: m.en_ejecucion });
+      } else if (m.tipo === 'caer') {
+        // Simulacro pedido por el coordinador: el equipo "se desenchufa". No se
+        // despide: deja de latir y de responder, y el coordinador debe notarlo solo.
+        caido = true;
+        clearInterval(latidos);
+        soltarTodo();
+        avisar('caido');
+        setTimeout(() => ws.close(), 1500);
+      } else if (m.tipo === 'lleno') avisar('rechazado', { mensaje: m.mensaje });
+    };
+    ws.onclose = () => {
+      clearInterval(latidos);
+      if (caido) return;
+      // Se cortó la conexión (wifi, reinicio del servidor…): se reintenta solo
+      soltarTodo();
+      intentos++;
+      avisar('reconectando', { intentos });
+      setTimeout(conectar, Math.min(10_000, 1000 * intentos));
+    };
   };
-  ws.onclose = () => { clearInterval(latidos); if (!caido) avisar('desconectado'); };
-  ws.onerror = () => avisar('error');
+  conectar();
 };

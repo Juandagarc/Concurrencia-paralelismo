@@ -23,9 +23,7 @@ const ROPA = ['#64748b', '#7c3aed', '#be185d', '#0f766e', '#b45309',
   '#1d4ed8', '#4d7c0f', '#9f1239', '#0e7490', '#6d28d9'];
 
 // ---------------------------------------------------------------- plano
-const SEP = 3.6;              // separación entre columnas de mesas
-const MESAS = [];
-for (const z of [3.5, 6.4]) for (let i = -2; i <= 2; i++) MESAS.push({ x: i * SEP, z });
+const Z_MESAS = 3.5;          // primera fila de mesas (el comedor crece hacia el fondo)
 const Z_CASA = -0.2;          // donde esperan los meseros libres
 const Z_BARRA = -4.4;         // mostrador y cocina
 const Z_PUESTO = -3.25;       // donde se para un mesero a trabajar
@@ -91,8 +89,18 @@ Object.values(M).forEach((m) => { m.userData.compartido = true; });
 
 // --------------------------------------------------------------- ayudas
 // Pasillos verticales entre columnas de mesas (a media distancia entre dos mesas)
-const corredor = (x) => THREE.MathUtils.clamp(
-  Math.round((x - SEP / 2) / SEP) * SEP + SEP / 2, -2.5 * SEP, 2.5 * SEP);
+/** Distribución del comedor según la cantidad de mesas (hasta 100). */
+function distribuirMesas(n) {
+  const cols = n <= 10 ? 5 : 10;
+  const sep = cols === 5 ? 3.6 : 2.7;            // separación entre columnas
+  const fila = cols === 5 ? 2.9 : 2.5;           // separación entre filas
+  const escala = cols === 5 ? 1 : 0.72;          // mesas y clientes más chicos si son muchos
+  const x0 = -((cols - 1) / 2) * sep;
+  const mesas = Array.from({ length: Math.max(1, n) }, (_, i) => ({
+    x: x0 + (i % cols) * sep, z: Z_MESAS + Math.floor(i / cols) * fila }));
+  const filas = Math.ceil(Math.max(1, n) / cols);
+  return { cols, sep, fila, escala, x0, mesas, fondo: Z_MESAS + (filas - 1) * fila + 1.6 };
+}
 
 function etiqueta(html, clase, cx = 0.5, cy = 1) {
   const div = document.createElement('div');
@@ -351,7 +359,9 @@ export class Escena {
     this.barra = new THREE.Group();
     this.comensales = new THREE.Group();
     this.efectos = new THREE.Group();
-    this.scene.add(this.personal, this.barra, this.comensales, this.efectos);
+    this.salon = new THREE.Group();
+    this.scene.add(this.personal, this.barra, this.comensales, this.efectos, this.salon);
+    this._construirSalon(10);
 
     new ResizeObserver(() => this._ajustar()).observe(contenedor);
     this._ajustar();
@@ -372,14 +382,8 @@ export class Escena {
     suelo.rotation.x = -Math.PI / 2;
     suelo.position.y = -0.02;
     s.add(suelo);
-    piso(28, 6.6, 0, 4.9, texturaMadera());     // comedor
+    this._texturaMadera = texturaMadera();
     piso(28, 7.6, 0, -2.2, texturaBaldosa());   // personal, caja, barra y cocina
-
-    for (const m of MESAS) {
-      const mesa = crearMesa();
-      mesa.position.set(m.x, 0, m.z);
-      s.add(mesa);
-    }
 
     // Barra (mostrador) con su pared
     const bx = (BARRA.x0 + BARRA.x1) / 2, bw = BARRA.x1 - BARRA.x0;
@@ -563,8 +567,9 @@ export class Escena {
       const color = PALETA[i % PALETA.length];
       const p = crearMesero(color, PIELES[(i * 3 + 1) % PIELES.length]);
       p.g.position.set(x, 0, Z_CASA);
+      if (esp < 1) p.g.scale.setScalar(Math.max(0.55, esp / 1.0));   // con muchos meseros, más chicos
       const lbl = etiqueta('', 'lbl lbl-mesero', 0.5, 1);
-      lbl.position.set(0, 2.6 + (i % 2) * 0.55, 0);
+      lbl.position.set(0, 2.6 + (i % (n > 12 ? 3 : 2)) * 0.55, 0);
       const anillo = new THREE.Mesh(G.anillo, new THREE.MeshBasicMaterial({
         color: COL.io, transparent: true, opacity: 0.85 }));
       anillo.rotation.x = Math.PI / 2;
@@ -583,6 +588,7 @@ export class Escena {
       this._lblMesero(m);
       if (distribuido) {
         m.lblNodo = etiqueta('arrancando…', 'lbl lbl-nodo', 0.5, 0);
+        m.lblNodo.visible = n <= 12;                             // demasiados: solo el nombre
         m.lblNodo.position.set(x, 0.02, zMat - prof / 2 + 0.45);   // al pie de su pizarra
         this.personal.add(m.lblNodo);
       }
@@ -747,8 +753,41 @@ export class Escena {
     for (let j = 0; j < this.cafeteras.length; j++) this.cafeteras[j] ??= this.maquinas[0].boquillas[0];
   }
 
+  // ------------------------------------------------------------- comedor
+  /** Piso y mesas para `n` clientes; el comedor crece hacia el fondo. */
+  _construirSalon(n) {
+    const lay = distribuirMesas(n);
+    if (this.lay && this.lay.mesas.length === lay.mesas.length) return;
+    this.lay = lay;
+    this._vaciar(this.salon);
+    const largo = lay.fondo - (Z_MESAS - 1.6);
+    const piso = new THREE.Mesh(new THREE.PlaneGeometry(28, largo),
+      new THREE.MeshStandardMaterial({ map: this._texturaMadera, roughness: 0.9 }));
+    piso.rotation.x = -Math.PI / 2;
+    piso.position.set(0, 0, Z_MESAS - 1.6 + largo / 2);
+    this.salon.add(piso);
+    for (const m of lay.mesas) {
+      const mesa = crearMesa();
+      mesa.position.set(m.x, 0, m.z);
+      mesa.scale.setScalar(lay.escala);
+      this.salon.add(mesa);
+    }
+    this._ajustar();
+  }
+
+  /** Pasillo entre columnas de mesas más cercano a `x`. */
+  _corredor(x) {
+    const { x0, sep, cols } = this.lay;
+    const k = Math.round((x - x0 - sep / 2) / sep);
+    return x0 + (THREE.MathUtils.clamp(k, -1, cols - 1) + 0.5) * sep;
+  }
+
+  /** Mesas que se verán (antes de ejecutar). */
+  mesas(n) { if (!this.clientes.size) this._construirSalon(n); }
+
   // ------------------------------------------------------------- clientes
   crearSolicitudes(solicitudes) {
+    this._construirSalon(solicitudes.length);
     this._vaciar(this.comensales);
     this._vaciar(this.efectos);
     this.vuelos = [];
@@ -757,29 +796,36 @@ export class Escena {
     this.colaCaja = [];
     this.cajaDueno = null;
     this._lblCaja();
+    const esc = this.lay.escala;
+    const n = solicitudes.length;
+    // Con muchas mesas los rótulos se achican y, con muchísimas, se quitan (queda el aro de color)
+    this.rotulos = n <= 20 ? 'completos' : n <= 50 ? 'mini' : 'ninguno';
     solicitudes.forEach((s, i) => {
-      const mesa = MESAS[i % MESAS.length];
+      const mesa = this.lay.mesas[i];
       const p = crearCliente(ROPA[i % ROPA.length], PIELES[i % PIELES.length]);
-      p.g.position.set(mesa.x, 0, mesa.z - 0.95);
+      p.g.position.set(mesa.x, 0, mesa.z - 0.95 * esc);
       p.g.scale.setScalar(0.001);
-      const lbl = etiqueta(
-        `<b>#${s.id} ${s.usuario}</b><small>${s.producto ?? ''} · ${s.trabajo === 'io' ? 'cocina, E/S' : 'máquina, CPU'}</small><em>esperando</em>`,
-        'lbl lbl-cliente', 0.5, 1);
+      const html = this.rotulos === 'completos'
+        ? `<b>#${s.id} ${s.usuario}</b><small>${s.producto ?? ''} · ${s.trabajo === 'io' ? 'cocina, E/S' : 'máquina, CPU'}</small><em>esperando</em>`
+        : `<b>#${s.id}</b><em></em>`;
+      const lbl = etiqueta(html, `lbl lbl-cliente${this.rotulos === 'mini' ? ' mini' : ''}`, 0.5, 1);
       lbl.position.set(0, 2.05, 0);
+
       lbl.visible = false;                 // aparece cuando el cliente llega
       p.g.add(lbl);
       const aro = new THREE.Mesh(G.aro, new THREE.MeshBasicMaterial({
         color: COL.espera, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false }));
       aro.rotation.x = -Math.PI / 2;
       aro.position.set(mesa.x, 0.025, mesa.z);
+      aro.scale.setScalar(esc);
       aro.visible = false;
       const taza = crearTaza();
-      taza.position.set(mesa.x + 0.15, 0.765, mesa.z + 0.15);
+      taza.position.set(mesa.x + 0.15 * esc, 0.765 * esc, mesa.z + 0.15 * esc);
       taza.visible = false;
       this.comensales.add(p.g, aro, taza);
       this.clientes.set(s.id, {
         s, ...p, lbl, estadoEl: lbl.element.querySelector('em'), aro, taza, mesa,
-        estado: 'espera', llego: false, desde: 0, vida: 0, salto: 0,
+        estado: 'espera', llego: false, desde: 0, vida: 0, salto: 0, esc,
       });
     });
   }
@@ -815,8 +861,8 @@ export class Escena {
   _irA(m, destino, extra = {}, alIniciar = null) {
     const desde = this._ultimo(m);
     const enComedor = (p) => p.z > Z_PASILLO + 0.05;
-    const a = enComedor(desde) ? corredor(desde.x) : null;
-    const b = enComedor(destino) ? corredor(destino.x) : null;
+    const a = enComedor(desde) ? this._corredor(desde.x) : null;
+    const b = enComedor(destino) ? this._corredor(destino.x) : null;
     const tramo = [];
     const punto = (x, z) => tramo.push({ pos: new THREE.Vector3(x, 0, z) });
     if (a !== null && a === b) {
@@ -834,8 +880,8 @@ export class Escena {
 
   /** Punto junto a la mesa donde se para el mesero, mirando al cliente. */
   _junto(c) {
-    const pos = new THREE.Vector3(c.mesa.x + 1.15, 0, c.mesa.z - 0.35);
-    const rot = Math.atan2(c.mesa.x - pos.x, c.mesa.z - 0.95 - pos.z);
+    const pos = new THREE.Vector3(c.mesa.x + 1.15 * c.esc, 0, c.mesa.z - 0.35 * c.esc);
+    const rot = Math.atan2(c.mesa.x - pos.x, c.mesa.z - 0.95 * c.esc - pos.z);
     return { pos, rot };
   }
 
@@ -887,7 +933,7 @@ export class Escena {
     c.llego = true;
     c.desde = performance.now();
     c.vida = 0;
-    c.lbl.visible = true;
+    c.lbl.visible = this.rotulos !== 'ninguno';
     c.aro.visible = true;
   }
 
@@ -945,7 +991,10 @@ export class Escena {
     }
   }
 
-  _puntoFila(k) { return new THREE.Vector3(CAJA.x - 1.0 * (k + 1), 0, Z_FILA); }
+  _puntoFila(k) {
+    // Con muchos meseros la fila se pliega en varias hileras
+    return new THREE.Vector3(CAJA.x - 0.75 * ((k % 12) + 1), 0, Z_FILA + 0.75 * Math.floor(k / 12));
+  }
 
   /** Acomoda a los meseros que esperan el Lock en la fila de la caja. */
   _reordenarFila() {
@@ -1090,8 +1139,11 @@ export class Escena {
     this.camera.aspect = w / h;
     const vfov = THREE.MathUtils.degToRad(this.camera.fov);
     const hfov = 2 * Math.atan(Math.tan(vfov / 2) * this.camera.aspect);
-    const dist = Math.max(12.4 / Math.tan(hfov / 2), 6.6 / Math.tan(vfov / 2));
-    const objetivo = new THREE.Vector3(-0.4, 0.8, 1.3);
+    // Encuadre: del fondo de la barra (z ≈ -5.3) al fondo del comedor, que crece con las mesas
+    const fondo = this.lay?.fondo ?? 7.9;
+    const medio = (fondo - 5.3) / 2;
+    const dist = Math.max(12.4 / Math.tan(hfov / 2), (fondo + 5.3) / 2 / Math.tan(vfov / 2));
+    const objetivo = new THREE.Vector3(-0.4, 0.8, medio);
     const dir = new THREE.Vector3(0, 0.8, 0.6).normalize();
     this.camera.position.copy(objetivo).addScaledVector(dir, dist);
     this.controles.target.copy(objetivo);

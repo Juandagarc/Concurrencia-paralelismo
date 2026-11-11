@@ -232,6 +232,8 @@ class MeseroFalso:
         self.vivo.set()
         self.entrantes: _queue.Queue = _queue.Queue()
         self.llaves: _queue.Queue = _queue.Queue()
+        self.candados: _queue.Queue = _queue.Queue()
+        self.reinicios = 0
         self.tramos = tramos            # lista compartida: (inicio, fin) de cada cálculo con la llave
         self.caer_al_pedirlo = caer_al_pedirlo
         self.c.enviar_json({"tipo": "hora", "c": time.time()})
@@ -249,12 +251,26 @@ class MeseroFalso:
                 m = self.c.recibir_json()
                 if m["tipo"] == "llave_ok":
                     self.llaves.put(m)
+                elif m["tipo"] == "candado":
+                    self.candados.put(m)
+                elif m["tipo"] in ("reiniciar", "cancelar"):
+                    self.reinicios += 1             # como el Worker: suelta lo que hacía
                 elif m["tipo"] == "caer" and self.caer_al_pedirlo:
                     self.vivo.clear()       # deja de latir y de trabajar sin avisar
                 else:
                     self.entrantes.put(m)
         except (OSError, ValueError):
             pass
+
+    def _esperar(self, cola, epoca, limite=20.0):
+        """Espera la respuesta del coordinador; None si hubo un reinicio o se cayó."""
+        fin = time.time() + limite
+        while time.time() < fin and self.vivo.is_set() and self.reinicios == epoca:
+            try:
+                return cola.get(timeout=0.05)
+            except _queue.Empty:
+                continue
+        return None
 
     def _latir(self):
         while self.vivo.is_set():
@@ -270,6 +286,7 @@ class MeseroFalso:
             if m.get("tipo") != "solicitud":
                 continue
             s, t0 = m["solicitud"], m["t0"]
+            epoca = self.reinicios
 
             def ev(tipo, **x):
                 self.c.enviar_json({"tipo": "evento",
@@ -281,14 +298,27 @@ class MeseroFalso:
                 gil = m.get("modo") == "concurrente" and s["trabajo"] == "cpu"
                 if gil:
                     self.c.enviar_json({"tipo": "llave"})
-                    self.llaves.get(timeout=10)
+                    if self._esperar(self.llaves, epoca) is None:
+                        break
                 a = time.time()
                 time.sleep(s["duracion"] / 5)
                 if gil:
                     self.tramos.append((a, time.time()))
                     self.c.enviar_json({"tipo": "soltar_llave"})
                 ev("progreso", progreso=paso / 5)
-            if self.vivo.is_set():
+            if self.reinicios != epoca:
+                continue                            # pedido abandonado: el siguiente
+            et = m.get("etapas")
+            if et and self.vivo.is_set():          # la caja: Lock distribuido
+                ev("etapa", etapa="caja_espera")
+                self.c.enviar_json({"tipo": "tomar"})
+                if self._esperar(self.candados, epoca) is None:
+                    continue                        # se cortó la ejecución o se cayó
+                ev("etapa", etapa="caja_cobro", dur=et["cobro"])
+                time.sleep(et["cobro"])
+                self.c.enviar_json({"tipo": "soltar"})
+                ev("etapa", etapa="entrega", dur=et["entrega"])
+            if self.vivo.is_set() and self.reinicios == epoca:
                 ev("fin")
 
     def cerrar(self):
@@ -383,7 +413,7 @@ def test_red_mesero_que_vuelve_recupera_su_puesto_y_los_pedidos(url_ws):
     hilo.start()
     time.sleep(0.8)
     ana.apagar_sin_avisar()                          # Apagar sin avisar…
-    time.sleep(1.6)                                  # …el coordinador nota que faltan latidos…
+    time.sleep(3.2)                                  # …el coordinador nota que faltan latidos…
     ana2 = MeseroFalso(url_ws, "Ana", identidad="pestana-de-ana-123")   # …y vuelve a entrar
     try:
         assert ana2.bienvenida["en_ejecucion"] is True
@@ -398,3 +428,71 @@ def test_red_mesero_que_vuelve_recupera_su_puesto_y_los_pedidos(url_ws):
     finally:
         ana2.cerrar()
         hilo.join(timeout=5)
+
+
+def test_red_falsa_alarma_el_mesero_atrasado_se_readmite(url_ws):
+    """Un mesero cuyos latidos se atrasan (pestaña en segundo plano) se da por
+    caído, pero cuando vuelven sus latidos el coordinador lo readmite."""
+    ana = MeseroFalso(url_ws, "Lenta", identidad="pestana-lenta-123")
+    beto = MeseroFalso(url_ws, "Beto")
+    esperar_externos(2)
+    resultado = {}
+    hilo = threading.Thread(target=lambda: resultado.update(
+        r=motor.ejecutar("paralelo", generar("io", 0.8, OPS), red=True)))
+    hilo.start()
+    time.sleep(0.6)
+    ana.vivo.clear()                        # se congela: ni latidos ni trabajo…
+    time.sleep(3.0)                         # …el coordinador la da por caída…
+    ana.c.enviar_json({"tipo": "latido"})   # …y su latido vuelve: falsa alarma
+    try:
+        hilo.join(timeout=30)
+        ev = resultado["r"]["eventos"]
+        assert any(e["tipo"] == "nodo_caido" and e["nodo"] == ana.nombre for e in ev)
+        assert any(e["tipo"] == "nodo_alta" and e.get("vuelve") and e["nodo"] == ana.nombre for e in ev)
+        fines = [e for e in ev if e["tipo"] == "fin"]
+        assert sorted(e["id"] for e in fines) == list(range(1, 11))
+    finally:
+        ana.cerrar()
+        beto.cerrar()
+
+
+def test_red_caida_en_tiempo_real_no_bloquea_la_caja(meseros):
+    """La caída de un mesero no puede dejar a los demás esperando la caja."""
+    meseros(3)
+    rapidas = {"pedido": 0.05, "camino_caja": 0.02, "cobro": 0.1, "entrega": 0.05}
+    r = motor.ejecutar("paralelo", generar("cpu", 0.3, OPS), red=True, caida=True,
+                       realista=True, etapas=rapidas)
+    ev = r["eventos"]
+    assert sum(e["tipo"] == "nodo_caido" for e in ev) == 1
+    assert sorted(e["id"] for e in ev if e["tipo"] == "fin") == list(range(1, 11))
+
+
+def test_red_detener_y_reiniciar_deja_todo_limpio(meseros):
+    """El coordinador detiene una ejecución a mitad de la caja; la siguiente corre normal."""
+    meseros(2)
+    lentas = {"pedido": 0.05, "camino_caja": 0.02, "cobro": 0.6, "entrega": 0.05}
+    hilo = threading.Thread(target=lambda: pytest.raises(
+        RuntimeError, motor.ejecutar, "paralelo", generar("io", 0.1, OPS), red=True,
+        realista=True, etapas=lentas))
+    hilo.start()
+    time.sleep(0.8)                                   # alguien está cobrando en la caja
+    assert distribuido.obtener().detener()
+    hilo.join(timeout=10)
+    assert not hilo.is_alive()
+    r = motor.ejecutar("paralelo", generar("io", 0.05, OPS), red=True, realista=True,
+                       etapas={"pedido": 0.02, "camino_caja": 0.01, "cobro": 0.02, "entrega": 0.02})
+    assert sorted(e["id"] for e in r["eventos"] if e["tipo"] == "fin") == list(range(1, 11))
+
+
+def test_generar_hasta_100_mesas():
+    lote = generar("mixto", 1.0, OPS, n=100, llegadas="escalonadas")
+    assert len(lote) == 100 and len({s["usuario"] for s in lote}) == 100   # nombres únicos
+    assert lote[-1]["llegada"] < 15                                          # llegan en pocos segundos
+    assert sum(s["duracion"] for s in lote) == pytest.approx(100.0, abs=0.05)
+
+
+def test_red_30_meseros_atienden_100_mesas(meseros):
+    meseros(30)
+    r = motor.ejecutar("paralelo", generar("io", 0.05, OPS, n=100), red=True)
+    assert r["trabajadores"] == 30 and r["nodos_usados"] == 30
+    assert sorted(e["id"] for e in r["eventos"] if e["tipo"] == "fin") == list(range(1, 101))
