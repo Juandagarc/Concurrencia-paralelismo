@@ -2,6 +2,14 @@
 // Un computador = un mesero = un Web Worker (ver nodo-trabajador.js).
 const $ = (s) => document.querySelector(s);
 const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/nodo`;
+// Identidad de esta pestaña: si el mesero se cae y vuelve a entrar, el
+// coordinador lo reconoce y le devuelve su puesto en la ejecución en curso.
+let identidad = null;
+try { identidad = sessionStorage.getItem('cafeteria-identidad'); } catch { /* sin almacenamiento */ }
+if (!identidad) {
+  identidad = (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`).replace(/[^A-Za-z0-9-]/g, '');
+  try { sessionStorage.setItem('cafeteria-identidad', identidad); } catch { /* sin almacenamiento */ }
+}
 let actual = null;
 let referencia = 15_000_000;
 
@@ -52,7 +60,8 @@ function entrar() {
       q('.d-rtt').textContent = `${(d.rtt * 1000).toFixed(1)} ms`;
       q('.d-aj').textContent = ms(d.ajuste);
       q('.d-aj').title = 'Algoritmo de Cristian: lo que se suma a tu reloj para tener la hora del coordinador';
-      estado('esperando pedidos');
+      estado(d.enEjecucion ? 'volviste a la ejecución en curso' : 'esperando pedidos');
+      q('.d-sol').textContent = d.enEjecucion ? 'retomando pedidos pendientes' : 'entras en la siguiente ejecución';
     } else if (d.estado === 'atendiendo') {
       estado('atendiendo', 'atendiendo');
       q('.d-sol').textContent = `#${d.solicitud.id} ${d.solicitud.producto ?? ''}`;
@@ -78,7 +87,7 @@ function entrar() {
     }
   };
   q('.peligro').addEventListener('click', () => apagar(w, 'apagado sin avisar'));
-  w.worker.postMessage({ orden: 'iniciar', url, nombre, hilo: 1, nucleos: navigator.hardwareConcurrency || 1 });
+  w.worker.postMessage({ orden: 'iniciar', url, nombre, hilo: 1, identidad, nucleos: navigator.hardwareConcurrency || 1 });
 }
 
 function apagar(w, texto) {

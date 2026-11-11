@@ -226,7 +226,7 @@ import queue as _queue  # noqa: E402
 class MeseroFalso:
     """Imita un computador que entra como mesero (web/nodo-trabajador.js)."""
 
-    def __init__(self, url, nombre, tramos=None, caer_al_pedirlo=True):
+    def __init__(self, url, nombre, tramos=None, caer_al_pedirlo=True, identidad=None):
         self.c = ws.conectar(url)
         self.vivo = threading.Event()
         self.vivo.set()
@@ -236,8 +236,10 @@ class MeseroFalso:
         self.caer_al_pedirlo = caer_al_pedirlo
         self.c.enviar_json({"tipo": "hora", "c": time.time()})
         self.c.recibir_json()
-        self.c.enviar_json({"tipo": "hola", "nombre": nombre, "hilo": 1, "rtt": 0, "ajuste": 0})
-        self.nombre = self.c.recibir_json()["nombre"]
+        self.c.enviar_json({"tipo": "hola", "nombre": nombre, "hilo": 1, "rtt": 0, "ajuste": 0,
+                            "identidad": identidad})
+        self.bienvenida = self.c.recibir_json()
+        self.nombre = self.bienvenida["nombre"]
         for f in (self._leer, self._latir, self._trabajar):
             threading.Thread(target=f, daemon=True).start()
 
@@ -292,6 +294,11 @@ class MeseroFalso:
     def cerrar(self):
         self.vivo.clear()
         self.c.cerrar()
+
+    def apagar_sin_avisar(self):
+        """Como el botón de la página: el Worker muere sin despedirse."""
+        self.vivo.clear()
+        self.c.sock.close()
 
 
 @pytest.fixture
@@ -361,3 +368,33 @@ def test_solo_el_coordinador_con_contrasena_ejecuta():
     sesion = lab.entrar("clave-de-prueba")
     assert sesion and lab.autorizado(sesion)
     assert Laboratorio(red=False).autorizado(None)        # el laboratorio local no pide clave
+
+
+def test_red_mesero_que_vuelve_recupera_su_puesto_y_los_pedidos(url_ws):
+    """Un solo mesero se apaga a mitad de la ejecución y vuelve a entrar."""
+    ana = MeseroFalso(url_ws, "Ana", identidad="pestana-de-ana-123")
+    esperar_externos(1)
+    resultado = {}
+
+    def correr():
+        resultado["r"] = motor.ejecutar("paralelo", generar("io", 0.2, OPS), red=True)
+
+    hilo = threading.Thread(target=correr)
+    hilo.start()
+    time.sleep(0.8)
+    ana.apagar_sin_avisar()                          # Apagar sin avisar…
+    time.sleep(1.6)                                  # …el coordinador nota que faltan latidos…
+    ana2 = MeseroFalso(url_ws, "Ana", identidad="pestana-de-ana-123")   # …y vuelve a entrar
+    try:
+        assert ana2.bienvenida["en_ejecucion"] is True
+        assert ana2.nombre == ana.nombre
+        hilo.join(timeout=30)
+        ev = resultado["r"]["eventos"]
+        assert [e["tipo"] for e in ev].count("sin_meseros") == 1
+        vuelta = [e for e in ev if e["tipo"] == "nodo_alta" and e.get("vuelve")]
+        assert len(vuelta) == 1 and vuelta[0]["nodo_idx"] == 0          # mismo puesto
+        fines = [e for e in ev if e["tipo"] == "fin"]
+        assert sorted(e["id"] for e in fines) == list(range(1, 11))    # nada se perdió
+    finally:
+        ana2.cerrar()
+        hilo.join(timeout=5)

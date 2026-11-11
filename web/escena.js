@@ -651,6 +651,7 @@ export class Escena {
   nodo(ev) {
     const m = this.meseros[ev.nodo_idx];
     if (!m) return;
+    if (m.caido) this._revivir(m);             // volvió (o entró otro en su puesto)
     m.nombre = ev.nodo;
     this._lblMesero(m);
     if (!m.lblNodo) return;
@@ -661,6 +662,20 @@ export class Escena {
     m.lblNodo.element.innerHTML = this.meseros.length > 5 ? quien : `${quien}<br>${reloj}`;
     m.lblNodo.element.title = `${ev.host} · RTT ${(ev.rtt * 1000).toFixed(2)} ms · latencia simulada `
       + `${(ev.latencia * 1000).toFixed(0)} ms · Cristian corrigió el reloj ${ms(ev.ajuste)}`;
+  }
+
+  /** Un mesero caído vuelve a la ejecución: se levanta y regresa a su tapete. */
+  _revivir(m) {
+    m.caido = false;
+    m.cae = 0;
+    m.g.rotation.x = 0;
+    m.g.position.y = 0;
+    for (const [material, color] of m.colores ?? []) material.color.setHex(color);
+    m.colores = null;
+    m.lbl.element.classList.remove('caido');
+    m.lblNodo?.element.classList.remove('caido');
+    m.ruta = [];
+    m.regresarEn = null;
   }
 
   asignada(ev) {
@@ -677,7 +692,13 @@ export class Escena {
     if (this.cajaDueno === m) this.cajaDueno = null;
     Object.assign(m, { caido: true, cae: 0, ruta: [], solicitud: null, entregando: null, etapa: null });
     m.ticket.visible = m.tazaBandeja.visible = m.anillo.visible = false;
-    m.g.traverse((o) => { if (o.material && !o.material.userData.compartido) o.material.color.set('#475569'); });
+    m.colores = [];
+    m.g.traverse((o) => {
+      if (o.material && !o.material.userData.compartido) {
+        m.colores.push([o.material, o.material.color.getHex()]);
+        o.material.color.set('#475569');
+      }
+    });
     m.lbl.element.classList.add('caido');
     if (m.lblNodo) {
       m.lblNodo.element.classList.add('caido');

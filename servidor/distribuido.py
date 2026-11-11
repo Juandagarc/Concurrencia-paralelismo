@@ -51,6 +51,7 @@ RAIZ = Path(__file__).resolve().parent.parent
 PUERTO = 50500
 LATIDO_MAX = 1.0          # segundos sin latido para dar un nodo por caído
 ESPERA_REGISTRO = 20.0    # segundos máximos para que arranque al menos un nodo
+GRACIA = 30.0             # si caen todos los nodos, cuánto se espera a que alguno vuelva
 MAX_NODOS = 12            # nodos por ejecución: para 10 solicitudes no hacen falta más
 POLITICAS = ("distribuido", "secuencial", "concurrente", "paralelo")
 # Cómo se coordinan los meseros en la versión web (siempre distribuida):
@@ -157,6 +158,7 @@ class _Ejecucion:
     hechas: set = field(default_factory=set)
     procesos: dict = field(default_factory=dict)         # índice local -> Popen
     activa: bool = True
+    sin_vivos: float | None = None    # desde cuándo no queda ningún nodo vivo
 
     def t(self) -> float:
         return round(time.time() - self.t0, 4)
@@ -333,12 +335,23 @@ class Coordinador:
     def _registrar_navegador(self, canal, msg: dict) -> Nodo | None:
         persona = re.sub(r"[^\w .-]", "", str(msg.get("nombre", "")))[:18].strip() or "Invitado"
         hilo = int(min(max(_num(msg.get("hilo"), 1), 1), 32))
+        # La identidad la guarda la pestaña del mesero: si vuelve a entrar tras
+        # caerse, el coordinador lo reconoce (como un equipo que se reinicia).
+        identidad = str(msg.get("identidad", ""))
+        identidad = identidad if re.fullmatch(r"[A-Za-z0-9-]{8,64}", identidad) else None
         with self.cond:
             if sum(x.navegador and x.vivo for x in self.nodos.values()) >= MAX_NAVEGADORES:
                 canal.enviar_json({"tipo": "lleno", "mensaje": "Ya hay demasiados equipos conectados"})
                 return None
+            previo = None
+            if identidad:
+                previo = max((x for x in self.nodos.values() if x.info.get("identidad") == identidad),
+                             key=lambda x: x.id, default=None)
+            if previo is not None and previo.vivo:
+                # La instancia anterior ya no existe aunque aún no haya faltado a sus latidos
+                self._dar_de_baja(previo, "reinicio")
             nid = next(self._ids)
-            nombre = persona if hilo == 1 else f"{persona}·{hilo}"
+            nombre = previo.nombre if previo else (persona if hilo == 1 else f"{persona}·{hilo}")
             if any(x.nombre == nombre and x.vivo for x in self.nodos.values()):
                 nombre = f"{nombre} #{nid}"
             n = Nodo(nid, nombre, {
@@ -346,10 +359,11 @@ class Coordinador:
                 "nucleos": int(min(max(_num(msg.get("nucleos"), 1), 1), 256)),
                 "rtt": min(max(_num(msg.get("rtt")), 0.0), 10.0),
                 "ajuste": min(max(_num(msg.get("ajuste")), -86400.0), 86400.0),
-                "desfase": 0.0, "navegador": True,
+                "desfase": 0.0, "navegador": True, "identidad": identidad,
             }, local=False, ultimo=time.time(), canal=canal)
             self.nodos[nid] = n
-        canal.enviar_json({"tipo": "bienvenido", "id": nid, "nombre": nombre})
+            en_curso = self._incorporar(n, previo)
+        canal.enviar_json({"tipo": "bienvenido", "id": nid, "nombre": nombre, "en_ejecucion": en_curso})
         self._avisar()
         return n
 
@@ -464,7 +478,46 @@ class Coordinador:
                "--desfase", str(DESFASE_RELOJ[indice % len(DESFASE_RELOJ)])]
         return subprocess.Popen(cmd, cwd=RAIZ, env={**os.environ, "LAB_CLAVE": self.clave})
 
-    def _alta(self, ej: _Ejecucion, n: Nodo) -> None:
+    def _incorporar(self, n: Nodo, previo: Nodo | None) -> bool:
+        """Mete en la ejecución en curso a un nodo del navegador que llega tarde.
+
+        Un mesero que vuelve recupera su mismo puesto; uno nuevo ocupa el puesto
+        de un nodo caído. Si no hay puesto libre, entra en la siguiente ejecución.
+        """
+        ej = self._ej
+        if ej is None or not ej.activa:
+            return False
+        if previo is not None and previo.id in ej.participantes:
+            puesto = previo.idx
+        else:
+            libres = sorted({p.idx for p in ej.participantes.values()}
+                            - {p.idx for p in ej.participantes.values() if p.vivo})
+            if not libres:
+                return False
+            puesto = libres[0]
+        n.idx = puesto
+        ej.participantes[n.id] = n
+        self._alta(ej, n, vuelve=previo is not None)
+        self.cond.notify_all()        # que el coordinador le reparta pedidos ya
+        return True
+
+    def _dar_de_baja(self, n: Nodo, motivo: str = "latidos") -> None:
+        """El nodo se da por caído: se le revocan candado y llave y su pedido vuelve a la fila."""
+        ahora = time.time()
+        n.vivo = False
+        self.candado.revocar(n.id)
+        self.llave.revocar(n.id)
+        tarea, n.tarea = n.tarea, None
+        ej = self._ej
+        if ej is None or n.id not in ej.participantes:
+            return
+        if tarea and tarea["id"] not in ej.hechas:
+            ej.pendientes.appendleft(tarea)       # se reasigna primero
+        ej.emitir({"tipo": "nodo_caido", "t": ej.t(), "nodo": n.nombre,
+                   "nodo_idx": n.idx, "id": tarea["id"] if tarea else None,
+                   "silencio": round(ahora - n.ultimo, 3), "motivo": motivo})
+
+    def _alta(self, ej: _Ejecucion, n: Nodo, vuelve: bool = False) -> None:
         if n.local:
             ej_lat = ej.latencia * FACTOR_LATENCIA[n.idx % len(FACTOR_LATENCIA)]
         else:
@@ -473,7 +526,8 @@ class Coordinador:
         ej.emitir({"tipo": "nodo_alta", "t": ej.t(), "nodo": n.nombre, "nodo_idx": n.idx,
                    "nodo_id": n.id, "host": n.info.get("host"), "pid": n.info.get("pid"),
                    "remoto": not n.local, "rtt": n.info.get("rtt"), "ajuste": n.info.get("ajuste"),
-                   "desfase": n.info.get("desfase"), "latencia": n.info["latencia"]})
+                   "desfase": n.info.get("desfase"), "latencia": n.info["latencia"],
+                   "vuelve": vuelve})
 
     def _repartir(self, ej: _Ejecucion) -> None:
         """Balanceo de carga: cada solicitud va al nodo libre que menos ha atendido.
@@ -515,27 +569,25 @@ class Coordinador:
     def _vigilar(self, ej: _Ejecucion) -> None:
         """Detector de fallos por latidos: sin latido reciente = nodo caído."""
         ahora = time.time()
-        for n in ej.participantes.values():
+        for n in list(ej.participantes.values()):
             if n.vivo and ahora - n.ultimo > LATIDO_MAX:
-                n.vivo = False
-                self.candado.revocar(n.id)
-                self.llave.revocar(n.id)
-                tarea, n.tarea = n.tarea, None
-                if tarea and tarea["id"] not in ej.hechas:
-                    ej.pendientes.appendleft(tarea)       # se reasigna primero
-                ej.emitir({"tipo": "nodo_caido", "t": ej.t(), "nodo": n.nombre,
-                           "nodo_idx": n.idx, "id": tarea["id"] if tarea else None,
-                           "silencio": round(ahora - n.ultimo, 3)})
+                self._dar_de_baja(n)
 
     def _comprobar(self, ej: _Ejecucion) -> None:
         vivos = any(n.vivo for n in ej.participantes.values())
         registrados = {n.idx for n in ej.participantes.values() if n.local}
         arrancando = any(p.poll() is None for i, p in ej.procesos.items() if i not in registrados)
         if vivos or arrancando:
+            ej.sin_vivos = None
             if not ej.participantes and time.time() - ej.t0 > ESPERA_REGISTRO:
                 raise RuntimeError("Ningún nodo se registró en el coordinador")
             return
-        raise RuntimeError("No quedan nodos vivos para atender las solicitudes")
+        # Cayeron todos: se espera un rato a que vuelva alguno (o entre otro) antes de rendirse
+        if ej.sin_vivos is None:
+            ej.sin_vivos = time.time()
+            ej.emitir({"tipo": "sin_meseros", "t": ej.t(), "espera": GRACIA})
+        if time.time() - ej.sin_vivos > GRACIA:
+            raise RuntimeError("No quedan nodos vivos para atender las solicitudes")
 
     def _reenviar(self, ej: _Ejecucion) -> None:
         """Recolecta los eventos de los nodos y descarta los que ya no valen."""

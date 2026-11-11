@@ -145,14 +145,14 @@ onmessage = async ({ data }) => {
       if (!mejor || r.rtt < mejor.rtt) mejor = r;
     }
     ({ ajuste, rtt } = mejor);
-    enviar({ tipo: 'hola', nombre: data.nombre, hilo: data.hilo,
+    enviar({ tipo: 'hola', nombre: data.nombre, hilo: data.hilo, identidad: data.identidad,
       nucleos: data.nucleos, rtt, ajuste });
     latidos = setInterval(() => enviar({ tipo: 'latido' }), LATIDO_MS);
   };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.tipo === 'hora') { pendienteHora?.(m); pendienteHora = null; }
-    else if (m.tipo === 'bienvenido') avisar('conectado', { id: m.id, nombre: m.nombre, ajuste, rtt, opsPorSeg });
+    else if (m.tipo === 'bienvenido') avisar('conectado', { id: m.id, nombre: m.nombre, ajuste, rtt, opsPorSeg, enEjecucion: m.en_ejecucion });
     if (caido) return;
     else if (m.tipo === 'solicitud') { cola.push(m); siguiente(); }
     else if (m.tipo === 'candado') { esperandoCandado?.(); esperandoCandado = null; }

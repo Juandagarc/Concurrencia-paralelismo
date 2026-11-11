@@ -9,7 +9,7 @@ const NOMBRE_ESC = { io: 'E/S', cpu: 'CPU', mixto: 'Mixto' };
 const NOMBRE_ETAPA = { pedido: 'toma el pedido', preparar: 'prepara', caja_camino: 'va a la caja',
   caja_espera: 'pide el Lock de la caja', caja_cobro: 'obtiene el Lock y cobra', entrega: 'suelta el Lock y entrega' };
 const ETQ_LOG = { ejecucion_inicio: 'ejecución', ejecucion_fin: 'total', nodo_alta: 'nodo', asignada: 'mensaje',
-  nodo_caido: 'sin latido', falla: 'falla' };
+  nodo_caido: 'sin latido', falla: 'falla', sin_meseros: 'esperando' };
 const COLOR_MODO = { secuencial: 'var(--sec)', concurrente: 'var(--con)', paralelo: 'var(--par)', distribuido: 'var(--dis)' };
 const ms = (s) => `${(s * 1000).toFixed(s < 0.01 ? 2 : 0)} ms`;
 
@@ -308,7 +308,10 @@ function registrar(ev) {
     const reloj = ev.desfase ? ` · su reloj iba ${ev.desfase > 0 ? '+' : ''}${ms(ev.desfase)}, Cristian ajusta ${ev.ajuste > 0 ? '+' : ''}${ms(ev.ajuste)}` : '';
     const donde = ev.pid?.startsWith?.('web-') ? `navegador de ${ev.host}` : `pid ${ev.pid}, ${ev.host}`;
     const corr = !ev.desfase && Math.abs(ev.ajuste) > 0.001 ? ` · Cristian ajusta su reloj ${ev.ajuste > 0 ? '+' : ''}${ms(ev.ajuste)}` : reloj;
-    detalle = `${ev.nodo} se registra (${donde}) · RTT ${ms(ev.rtt)}${corr}`;
+    detalle = ev.vuelve
+      ? `${ev.nodo} vuelve a entrar y recupera su puesto en la ejecución · RTT ${ms(ev.rtt)}`
+      : `${ev.nodo} se registra (${donde}) · RTT ${ms(ev.rtt)}${corr}`;
+    if (ev.vuelve) clase = 'red';
     clase = 'red';
   } else if (ev.tipo === 'asignada') {
     detalle = `coordinador → ${ev.nodo}: solicitud #${ev.id}${ev.reintento ? ' (REASIGNADA)' : ''} · latencia ${ms(ev.latencia)}`;
@@ -317,7 +320,12 @@ function registrar(ev) {
     detalle = `${ev.nodo} se apaga sin avisar con la solicitud #${ev.id} a medias`;
     clase = 'falla';
   } else if (ev.tipo === 'nodo_caido') {
-    detalle = `${ev.nodo} lleva ${ev.silencio.toFixed(2)} s sin latido: el coordinador lo da por caído${ev.id ? ` y reasigna #${ev.id}` : ''}`;
+    detalle = ev.motivo === 'reinicio'
+      ? `${ev.nodo} volvió a conectarse: su instancia anterior se da por caída${ev.id ? ` y #${ev.id} vuelve a la fila` : ''}`
+      : `${ev.nodo} lleva ${ev.silencio.toFixed(2)} s sin latido: el coordinador lo da por caído${ev.id ? ` y reasigna #${ev.id}` : ''}`;
+    clase = 'falla';
+  } else if (ev.tipo === 'sin_meseros') {
+    detalle = `no queda ningún mesero vivo: el coordinador espera ${ev.espera} s a que alguno vuelva o entre`;
     clase = 'falla';
   } else if (ev.tipo === 'error') {
     detalle = ev.mensaje;
